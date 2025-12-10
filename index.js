@@ -8,8 +8,7 @@ const {
   REST,
   Routes,
   SlashCommandBuilder,
-  PermissionsBitField,
-  ChannelType
+  PermissionsBitField
 } = require('discord.js');
 const http = require('http');
 
@@ -44,9 +43,6 @@ const HOPS_AVATAR_URL = 'https://i.imgur.com/r62Y0c7.png';
 
 // NICKNAME SCAN INTERVAL (5 seconds = 5000 milliseconds)
 const NICKNAME_SCAN_INTERVAL = 5 * 1000;
-// RETROACTIVE FILTER INTERVAL (5 minutes = 300,000 milliseconds)
-const RETRO_FILTER_INTERVAL = 5 * 60 * 1000; 
-
 
 const HELP_MESSAGE = `hello! Do you need help?
 Please go to https://discord.com/channels/${GUILD_ID}/1414304297122009099
@@ -55,6 +51,7 @@ https://discord.com/channels/${GUILD_ID}/1414352972304879626
 channel to create a more helpful environment to tell a mod`;
 
 // ================= STRICT FILTER CONFIG =================
+
 // 0. ALLOWED WORDS (WHITELIST)
 const ALLOWED_WORDS = [
   "assist", "assistance", "assistant", "associat", 
@@ -81,6 +78,7 @@ const SEVERE_WORDS = [
 
 // Combine both lists for the general filter used for nicknames and RP channel lockdown
 const BAD_WORDS = [...MILD_BAD_WORDS, ...SEVERE_WORDS];
+
 
 // Map for detecting Leetspeak bypasses
 const LEET_MAP = {
@@ -163,20 +161,6 @@ async function moderateNickname(member) {
   return false; 
 }
 
-// Helper for checking if a message has a valid image
-function hasValidImage(message) {
-    // Check for attachments (files)
-    const hasImageAttachment = message.attachments.some(att =>
-        att.contentType?.startsWith('image/') ||
-        att.name?.match(/\.(jpg|jpeg|png|gif|webp)$/i) // Includes common image extensions
-    );
-
-    // Check for embeds that are images (e.g., direct image link embeds)
-    const hasImageEmbed = message.embeds.some(embed => embed.image || embed.thumbnail);
-
-    return hasImageAttachment || hasImageEmbed;
-}
-
 /**
  * RECURRING FUNCTION: Checks all nicknames in the guild repeatedly.
  */
@@ -207,66 +191,18 @@ async function runAutomatedNicknameScan(guild) {
 }
 
 /**
- * NEW: Retroactive Image Filter
- * Checks the last 100 messages in the image-only channel (TARGET_CHANNEL_ID) 
- * and deletes any that violate the rules (messages with text OR messages with no image).
+ * Starts the recurring nickname scan.
  */
-async function runRetroactiveImageFilter(guild) {
-    const channel = guild.channels.cache.get(TARGET_CHANNEL_ID);
-    // Ensure channel exists and is a text channel
-    if (!channel || channel.type !== ChannelType.GuildText) return; 
-
-    let deletedCount = 0;
+function startAutomatedNicknameScan(guild) {
+    // Run once immediately
+    runAutomatedNicknameScan(guild); 
     
-    try {
-        // Fetch the last 100 messages
-        const messages = await channel.messages.fetch({ limit: 100 });
-        const log = guild.channels.cache.get(LOG_CHANNEL_ID);
-        
-        for (const [id, message] of messages.entries()) {
-            // Skip bot messages
-            if (message.author.bot) continue;
+    // Set up interval for recurring runs
+    setInterval(() => {
+        runAutomatedNicknameScan(guild);
+    }, NICKNAME_SCAN_INTERVAL);
 
-            const isTextPresent = message.content && message.content.trim().length > 0;
-            const hasImage = hasValidImage(message);
-            let shouldDelete = false;
-            let reason = '';
-
-            // 1. Delete if it has text AND no image (standard image-only violation)
-            if (isTextPresent && !hasImage) {
-                shouldDelete = true;
-                reason = 'Contained only text (no image)';
-            } 
-            // 2. Delete if it has text AND an image (Your specific rule: "delete any images that have text")
-            else if (isTextPresent && hasImage) {
-                shouldDelete = true;
-                reason = 'Contained both text and an image';
-            }
-            // 3. Delete if it has no text AND no image (empty message violation, although Discord usually prevents this)
-            else if (!isTextPresent && !hasImage) {
-                 shouldDelete = true;
-                 reason = 'Contained no content (neither text nor image)';
-            }
-
-
-            if (shouldDelete) {
-                // Delete the message silently
-                await message.delete().catch(e => console.error(`Failed to delete message ${id}: ${e.message}`));
-                deletedCount++;
-
-                if (log) {
-                    log.send(`🗑️ **Retroactive Image Filter**\nUser: <@${message.author.id}>\nChannel: <#${TARGET_CHANNEL_ID}>\nReason: ${reason}.`);
-                }
-            }
-        }
-        
-        if (deletedCount > 0) {
-            console.log(`Retroactive Filter: Deleted ${deletedCount} message(s) in image-only channel.`);
-        }
-        
-    } catch (error) {
-        console.error('Retroactive Image Filter failed:', error);
-    }
+    console.log(`Automated nickname scan started, running every ${NICKNAME_SCAN_INTERVAL / 1000} seconds.`);
 }
 
 
@@ -293,22 +229,10 @@ client.once('ready', async () => {
     status: 'online'
   });
 
-  // START RECURRING CHECKS
+  // START RECURRING NICKNAME CHECK
   const guild = client.guilds.cache.get(GUILD_ID);
   if (guild) {
-      // 1. Nickname Scan
-      runAutomatedNicknameScan(guild); // Run once immediately
-      setInterval(() => {
-          runAutomatedNicknameScan(guild);
-      }, NICKNAME_SCAN_INTERVAL);
-      console.log(`Automated nickname scan started, running every ${NICKNAME_SCAN_INTERVAL / 1000} seconds.`);
-
-      // 2. Retroactive Image Filter
-      runRetroactiveImageFilter(guild); // Run once immediately
-      setInterval(() => {
-          runRetroactiveImageFilter(guild);
-      }, RETRO_FILTER_INTERVAL);
-      console.log(`Retroactive image filter started, running every ${RETRO_FILTER_INTERVAL / 60000} minutes.`);
+      startAutomatedNicknameScan(guild); 
   }
 
 
@@ -334,12 +258,6 @@ client.once('ready', async () => {
         opt.setName('message')
           .setDescription('The message to send')
           .setRequired(true)),
-          
-    // NEW COMMAND
-    new SlashCommandBuilder()
-      .setName('threadlink')
-      .setDescription('Create a thread on a message using its link (Mods only)')
-      .addStringOption(opt => opt.setName('link').setDescription('The Discord message link').setRequired(true)),
 
     new SlashCommandBuilder().setName('help').setDescription('Get help'),
     new SlashCommandBuilder().setName('serverinfo').setDescription('Get server information'),
@@ -405,7 +323,7 @@ client.on('interactionCreate', async (interaction) => {
     const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ModerateMembers) || interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages);
 
     // --- MOD ONLY COMMANDS CHECK ---
-    if (['kick','ban','unban','timeout','setup', 'threadlink'].includes(interaction.commandName) && !isMod) {
+    if (['kick','ban','unban','timeout','setup'].includes(interaction.commandName) && !isMod) {
       return interaction.reply({ content: '❌ Mods only', ephemeral: true });
     }
     
@@ -465,59 +383,6 @@ client.on('interactionCreate', async (interaction) => {
       }
       return; 
     }
-    
-    // --- NEW: /threadlink command logic ---
-    if (interaction.commandName === 'threadlink') {
-        await interaction.deferReply({ ephemeral: true });
-        const link = interaction.options.getString('link');
-        
-        // Regex to parse the link: discord.com/channels/GUILD_ID/CHANNEL_ID/MESSAGE_ID
-        const match = link.match(/\/(\d+)\/(\d+)\/(\d+)$/);
-        
-        if (!match) {
-            return interaction.editReply({ content: '❌ Invalid Discord message link format.' });
-        }
-        
-        const [full, guildId, channelId, messageId] = match;
-
-        if (guildId !== GUILD_ID) {
-             return interaction.editReply({ content: '❌ The message link must be from this server.' });
-        }
-        
-        try {
-            const channel = await client.channels.fetch(channelId);
-            if (!channel || channel.type !== ChannelType.GuildText) {
-                return interaction.editReply({ content: '❌ Target channel not found or is not a text channel.' });
-            }
-            
-            const messageToThread = await channel.messages.fetch(messageId);
-            
-            if (!messageToThread) {
-                return interaction.editReply({ content: '❌ Message not found.' });
-            }
-
-            // Create thread on the message
-            const thread = await messageToThread.startThread({
-                name: `Moderator Thread on: ${messageToThread.author.username}`,
-                autoArchiveDuration: 60,
-                reason: `Thread requested by moderator ${interaction.user.tag}`
-            });
-
-            // Send confirmation and thread controls
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('archive_thread').setLabel('Archive Thread').setStyle(ButtonStyle.Danger),
-                new ButtonBuilder().setCustomId('edit_title').setLabel('Edit Title').setStyle(ButtonStyle.Primary)
-            );
-            await thread.send({ content: `Thread created on: ${link}\nThread controls:`, components: [row] });
-
-            return interaction.editReply({ content: `✅ Thread created: ${thread.toString()}` });
-            
-        } catch (error) {
-            console.error('Threadlink command failed:', error);
-            return interaction.editReply({ content: '❌ An error occurred while creating the thread. Check bot permissions (Manage Threads/Read History).' });
-        }
-    }
-
 
     if (interaction.commandName === 'help') {
       return interaction.reply({ content: HELP_MESSAGE, ephemeral: true });
@@ -623,7 +488,7 @@ client.on('interactionCreate', async (interaction) => {
 
         const ticketChannel = await interaction.guild.channels.create({
           name: chanName,
-          type: ChannelType.GuildText, // Text channel
+          type: 0, // Text channel
           permissionOverwrites: overwrites,
           parent: parent,
           reason: `Ticket created by ${member.user.tag}`
@@ -756,45 +621,6 @@ If they want to close it there will be a Close button on top. When close is conf
     if (interaction.customId === 'confirm_close_no') {
       return interaction.reply({ content: 'Close cancelled.', ephemeral: true });
     }
-    
-    // --- THREAD BUTTONS ---
-    if (interaction.customId === 'archive_thread' || interaction.customId === 'edit_title') {
-      const thread = interaction.channel;
-      if (!thread || !thread.isThread()) {
-        return interaction.reply({ content: "❌ Use this command inside a thread.", ephemeral: true });
-      }
-      
-      // Check if user is the thread creator OR a moderator
-      const isThreadStarter = thread.ownerId === interaction.user.id;
-      const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages);
-
-      if (!isThreadStarter && !isMod) {
-          return interaction.reply({ content: "❌ Only the thread creator or a moderator can use these controls.", ephemeral: true });
-      }
-
-      if (interaction.customId === 'archive_thread') {
-        await thread.setArchived(true);
-        return interaction.reply({ content: "✅ Archived", ephemeral: true });
-      }
-
-      if (interaction.customId === 'edit_title') {
-        await interaction.reply({ content: "Send the new title in the thread. You have 30 seconds.", ephemeral: true });
-        // Create a message collector for the next message from the user
-        const filter = m => m.author.id === interaction.user.id && m.channelId === thread.id;
-        const collector = thread.createMessageCollector({ filter, time: 30000, max: 1 });
-        collector.on('collect', async (msg) => {
-          try {
-              // Set thread name, limited to 100 characters
-              await thread.setName(msg.content.slice(0, 100)); 
-              await msg.delete();
-              await interaction.followUp({ content: "✅ Title updated", ephemeral: true });
-          } catch (e) {
-              console.error("Failed to edit thread title:", e);
-              await interaction.followUp({ content: "❌ Failed to update title (Permissions or length)", ephemeral: true });
-          }
-        });
-      }
-    }
   }
 });
 
@@ -805,48 +631,12 @@ client.on('messageCreate', async (message) => {
   const content = message.content;
   const lowerContent = content.toLowerCase();
   const member = message.member;
-  
-  // Rule: Immediate check for image-only channel
-  if (message.channel.id === TARGET_CHANNEL_ID) {
-    const isTextPresent = message.content && message.content.trim().length > 0;
-    const hasImage = hasValidImage(message);
-
-    // Delete if it has text OR if it has no image (real-time check)
-    // This logic ensures that any text, even with an image, gets deleted immediately.
-    // AND any message without an image also gets deleted immediately.
-    if (isTextPresent || !hasImage) {
-        await message.delete().catch(() => {});
-        const log = client.channels.cache.get(LOG_CHANNEL_ID);
-        if (log) log.send(`🗑️ **Real-time Image Filter**\nUser: <@${message.author.id}>\nChannel: <#${TARGET_CHANNEL_ID}>\nReason: ${isTextPresent ? 'Contained text' : 'No image detected'}.`);
-        return;
-    }
-
-    // If it passes the filter (image only, no text), start the thread
-    try { 
-        await message.react('✨'); 
-        const thread = await message.startThread({
-            name: `Thread: ${message.author.username}`,
-            autoArchiveDuration: 60,
-            reason: 'Automatic thread creation for image post'
-        });
-        const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('archive_thread').setLabel('Archive Thread').setStyle(ButtonStyle.Danger),
-            new ButtonBuilder().setCustomId('edit_title').setLabel('Edit Title').setStyle(ButtonStyle.Primary)
-        );
-        await thread.send({ content: "Thread controls:", components: [row] });
-    } catch (e) {
-        console.error("Failed to create thread/react:", e);
-    }
-    return;
-  }
-  // --- End Image-Only Channel Logic ---
-
 
   // RULE: INAPPROPRIATE RP LOCKDOWN 
   if (message.channel.id === RP_CHANNEL_ID && containsBadWord(lowerContent)) {
       const category = message.guild.channels.cache.get(RP_CATEGORY_ID);
       // Check if it's actually a category (type 4)
-      if (category && category.type === ChannelType.GuildCategory) { 
+      if (category && category.type === 4) { 
           try {
               const everyoneRole = message.guild.roles.cache.find(r => r.name === '@everyone');
               if (everyoneRole) {
@@ -980,6 +770,39 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
+  // IMAGE ONLY CHANNEL THREAD SYSTEM
+  if (message.channel.id === TARGET_CHANNEL_ID) {
+    const hasImage = message.attachments.some(att =>
+      att.contentType?.startsWith('image/') ||
+      att.name?.match(/\.(jpg|jpeg|png|gif)$/i)
+    );
+
+    if (!hasImage) {
+      await message.delete().catch(() => {});
+      return;
+    }
+
+    try { await message.react('✨'); } catch {}
+
+    let thread;
+    try {
+      // Create a thread on the image message
+      thread = await message.startThread({
+        name: `Thread: ${message.author.username}`,
+        autoArchiveDuration: 60,
+        reason: 'Automatic thread creation for image post'
+      });
+    } catch { return; }
+
+    try {
+      // Send thread control buttons
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('archive_thread').setLabel('Archive Thread').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('edit_title').setLabel('Edit Title').setStyle(ButtonStyle.Primary)
+      );
+      await thread.send({ content: "Thread controls:", components: [row] });
+    } catch { }
+  }
 });
 
 // ================= RULE 11: JOIN/LEAVE TROLLING =================
@@ -1016,6 +839,49 @@ client.on('guildMemberAdd', async (member) => {
     // Warning after 6 rapid joins
     const log = client.channels.cache.get(LOG_CHANNEL_ID);
     if (log) log.send(`⚠️ **Troll Warning**\nUser: ${member.user.tag} has joined ${userData.count} times recently.`);
+  }
+});
+
+// ================= THREAD BUTTONS =================
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isButton()) return;
+
+  if (interaction.customId === 'archive_thread' || interaction.customId === 'edit_title') {
+    const thread = interaction.channel;
+    if (!thread || !thread.isThread()) {
+      return interaction.reply({ content: "❌ Use this command inside a thread.", ephemeral: true });
+    }
+    
+    // Check if user is the thread creator OR a moderator
+    const isThreadStarter = thread.ownerId === interaction.user.id;
+    const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages);
+
+    if (!isThreadStarter && !isMod) {
+        return interaction.reply({ content: "❌ Only the thread creator or a moderator can use these controls.", ephemeral: true });
+    }
+
+    if (interaction.customId === 'archive_thread') {
+      await thread.setArchived(true);
+      return interaction.reply({ content: "✅ Archived", ephemeral: true });
+    }
+
+    if (interaction.customId === 'edit_title') {
+      await interaction.reply({ content: "Send the new title in the thread. You have 30 seconds.", ephemeral: true });
+      // Create a message collector for the next message from the user
+      const filter = m => m.author.id === interaction.user.id && m.channelId === thread.id;
+      const collector = thread.createMessageCollector({ filter, time: 30000, max: 1 });
+      collector.on('collect', async (msg) => {
+        try {
+            // Set thread name, limited to 100 characters
+            await thread.setName(msg.content.slice(0, 100)); 
+            await msg.delete();
+            await interaction.followUp({ content: "✅ Title updated", ephemeral: true });
+        } catch (e) {
+            console.error("Failed to edit thread title:", e);
+            await interaction.followUp({ content: "❌ Failed to update title (Permissions or length)", ephemeral: true });
+        }
+      });
+    }
   }
 });
 
