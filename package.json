@@ -1,17 +1,22 @@
 {
-  "name": "hopper",
+  "name": "hopper-discord-bot",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "A feature-rich Discord bot with moderation, filters, and custom systems.",
+  "main": "index 2.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node \"index 2.js\""
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
-    "discord.js": "^14.25.1",
-    "dotenv": "^17.2.3",
-    "express": "^5.2.1"
-  }
+    "discord.js": "^14.14.1",
+    "http": "^0.0.1-security"
+    
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "moderation",
+    "discordjs"
+  ],
+  "author": "",
+  "license": "ISC"
 }
