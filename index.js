@@ -30,6 +30,18 @@ if (!process.env.GEMINI_API_KEY) {
 }
 // --------------------
 
+// ====================== CRITICAL MISSING PIECE ADDED ======================
+// Initialize Discord Bot Client with necessary permissions (Intents)
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,           // Required for guild-related events
+    GatewayIntentBits.GuildMessages,    // Required for message-related events
+    GatewayIntentBits.MessageContent,   // CRITICAL: Required to read message content
+    GatewayIntentBits.GuildMembers,     // Required for join/leave tracking, member fetching, and nickname moderation
+  ],
+});
+// =========================================================================
+
 // ====================== CRITICAL CONFIGURATION: REPLACE THESE ======================
 
 // ** CRITICAL: REPLACE THIS WITH THE DIRECT LINK TO STORMY'S RP IMAGE **
