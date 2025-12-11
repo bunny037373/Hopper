@@ -8,12 +8,13 @@ const {
   REST,
   Routes,
   SlashCommandBuilder,
-  PermissionsBitField
+  PermissionsBitField,
+  ThreadChannel, // Import ThreadChannel for type checking
 } = require('discord.js');
 const http = require('http');
 
 // --- AI Import ---
-const { GoogleGenAI } = require('@google/genai');
+const { GoogleGenAI, HarmCategory, HarmBlockThreshold } = require('@google/genai');
 // -----------------
 
 // Check for the mandatory token environment variable
@@ -61,112 +62,91 @@ and for more assistance please use
 https://discord.com/channels/${GUILD_ID}/1414352972304879626
 channel to create a more helpful environment to tell a mod`;
 
-// ================= STRICT FILTER CONFIG =================
+// ================= AI INITIALIZATION & CONFIGURATION =================
 
-// 0. ALLOWED WORDS (WHITELIST)
-const ALLOWED_WORDS = [
-  "assist", "assistance", "assistant", "associat", 
-  "class", "classic", "glass", "grass", "pass", "bass", "compass", 
-  "hello", "shell", "peacock", "cocktail", "babcock"
+// Configure Safety Settings: This is the key to AI-based content moderation.
+// We set a very strict threshold (BLOCK_LOW_AND_ABOVE) for Hate Speech and Harassment
+// to ensure the bot catches slurs and toxic language with high sensitivity.
+const safetySettings = [
+  {
+    category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+    threshold: HarmBlockThreshold.BLOCK_LOW_AND_ABOVE,
+  },
+  {
+    category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+    threshold: HarmBlockThreshold.BLOCK_LOW_AND_ABOVE,
+  },
 ];
 
-// 1. WORDS THAT TRIGGER MESSAGE DELETION ONLY (Common swearing)
-const MILD_BAD_WORDS = [
-  "fuck", "f*ck", "f**k", "f-ck", "fck", "fu-", "f-", "f*cking", "fucking",
-  "shit", "s*it", "s**t", "sh!t",
-  "ass", "bitch", "hoe", "whore", "slut", "cunt", 
-  "dick", "pussy", "cock", "bastard", "sexy",
-];
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const aiModel = 'gemini-2.5-flash';
 
-// 2. WORDS THAT TRIGGER A TIMEOUT (Slurs, threats, hate speech, extreme trolling)
-const SEVERE_WORDS = [
-  "nigger", "nigga", "niga", "faggot", "fag", "dyke", "tranny", "chink", "kike", "paki", "gook", "spic", "beaner", "coon", 
-  "retard", "spastic", "mong", "autist",
-  "kys", "kill yourself", "suicide", "rape", "molest",
-  "hitler", "nazi", "kkk",
-  "joke about harassing", "troll joke", "harassment funny", "trolling funny", "trollin", "troller"
-];
+/**
+ * Uses Gemini to analyze a message for toxic content (slurs, harassment).
+ * * @param {string} text The message content to check.
+ * @returns {Promise<{isToxic: boolean, blockCategory: string}>}
+ */
+async function checkMessageToxicity(text) {
+  if (text.length === 0) return { isToxic: false, blockCategory: 'None' };
+  
+  try {
+    const response = await ai.models.generateContent({
+      model: aiModel,
+      contents: [{ role: "user", parts: [{ text: `Analyze the following user message for hate speech, slurs, harassment, or other inappropriate content: "${text}"` }] }],
+      safetySettings: safetySettings,
+    });
 
-// Combine both lists for the general filter used for nicknames and RP channel lockdown
-const BAD_WORDS = [...MILD_BAD_WORDS, ...SEVERE_WORDS];
+    // The Gemini API response will be blocked if any of the custom safety 
+    // settings (like BLOCK_LOW_AND_ABOVE for Hate Speech) are triggered.
+    if (response.candidates && response.candidates.length > 0) {
+        const candidate = response.candidates[0];
+        
+        if (candidate.finishReason === 'SAFETY') {
+            const blockedCategory = candidate.safetyRatings.map(r => {
+                // Check if the rating shows the content was blocked for this category
+                if (r.probability === 'MEDIUM' || r.probability === 'HIGH' || r.probability === 'LOW') {
+                    // This is a simple way to approximate which filter caused the block
+                    return r.category;
+                }
+                return null;
+            }).filter(Boolean).join(' & ');
 
+            return { isToxic: true, blockCategory: blockedCategory || 'Unknown' };
+        }
+    }
+    // If the response is not blocked and content is generated, it's considered safe.
+    return { isToxic: false, blockCategory: 'None' };
 
-// Map for detecting Leetspeak bypasses
-const LEET_MAP = {
-  '0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '@': 'a', '$': 's', '!': 'i', '(': 'c', '+': 't'
-};
+  } catch (error) {
+    // This catches API errors (like rate limits or key issues)
+    console.error('Gemini Moderation API Error:', error);
+    // If there is an error, default to SAFE to avoid false positives and
+    // keep the bot running, but log the issue.
+    return { isToxic: false, blockCategory: 'API_Error' }; 
+  }
+}
+
+// ================= END AI INITIALIZATION & CONFIGURATION =================
 
 // ================= JOIN/LEAVE TRACKER =================
 const joinTracker = new Map(); 
 
-// ================= AI INITIALIZATION =================
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-const aiModel = 'gemini-2.5-flash';
-// =====================================================
-
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers 
-  ]
-});
-
-// Helper: find mod roles
-function getModeratorRoles(guild) {
-  return guild.roles.cache.filter(role => {
-    if (role.managed) return false;
-    const p = role.permissions;
-    return p.has(PermissionsBitField.Flags.ManageMessages) || p.has(PermissionsBitField.Flags.ModerateMembers) || p.has(PermissionsBitField.Flags.KickMembers) || p.has(PermissionsBitField.Flags.BanMembers);
-  });
-}
-
-// Helper: Normalize text and check against a specific list
-function containsFilteredWord(text, wordList) {
-  if (!text) return false;
-   
-  let lower = text.toLowerCase();
-
-  // --- STEP 1: REMOVE ALLOWED WORDS ---
-  ALLOWED_WORDS.forEach(safeWord => {
-      if (lower.includes(safeWord)) {
-          // Use a simple replacement to avoid accidental matching after normalization
-          lower = lower.replaceAll(safeWord, ''); 
-      }
-  });
-
-  // --- STEP 2: DIRECT CHECK (On remaining text) ---
-  if (wordList.some(word => lower.includes(word))) return true;
-
-  // --- STEP 3: NORMALIZE (Remove spaces, symbols, convert leetspeak) ---
-  let normalized = lower.split('').map(char => LEET_MAP[char] || char).join('');
-  normalized = normalized.replace(/[^a-z]/g, ''); // Remove non-letters
-
-  // Check normalized string against bad words
-  return wordList.some(word => normalized.includes(word));
-}
-
-// Wrapper for the general (combined) bad word list check
-function containsBadWord(text) {
-    return containsFilteredWord(text, BAD_WORDS);
-}
-
-// Helper: Moderate Nickname 
+// Helper: Moderate Nickname (NOTE: This still uses a word list and is outside the AI check)
 async function moderateNickname(member) {
-  // Check against both severe and mild lists
-  if (containsFilteredWord(member.displayName, SEVERE_WORDS) || containsFilteredWord(member.displayName, MILD_BAD_WORDS)) {
+  // *** NOTE: For nickname moderation, we must use a static list or a dedicated 
+  // moderation API endpoint, as the Gemini model is optimized for chat/text generation.
+  // We'll use a very strict check for the nickname to minimize false positives.
+  const NICKNAME_FILTER_WORDS = ["fuck", "shit", "ass", "bitch", "hoe", "whore", "slut", "cunt", "dick", "pussy", "cock", "nigger", "nigga", "faggot", "dyke", "tranny", "kys", "kill yourself"];
+  let displayName = member.displayName.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  if (NICKNAME_FILTER_WORDS.some(word => displayName.includes(word))) {
     try {
-      // Check if the bot can manage this member
       if (member.manageable) {
         await member.setNickname("[moderated nickname by hopper]");
         
         const log = member.guild.channels.cache.get(LOG_CHANNEL_ID);
-        if (log) log.send(`🛡️ **Nickname Moderated**\nUser: <@${member.id}>\nOld Name: ||${member.user.username}||\nReason: Inappropriate Username`);
+        if (log) log.send(`🛡️ **Nickname Moderated**\nUser: <@${member.id}>\nOld Name: ||${member.user.username}||\nReason: Inappropriate Username (Static Filter)`);
         return true; 
-      } else {
-         console.log(`Failed to moderate nickname for ${member.user.tag}: Bot role is lower than user's highest role.`);
-         return false; 
       }
     } catch (err) {
       console.error(`Failed to moderate nickname for ${member.user.tag}:`, err);
@@ -175,6 +155,7 @@ async function moderateNickname(member) {
   }
   return false; 
 }
+
 
 /**
  * RECURRING FUNCTION: Checks all nicknames in the guild repeatedly.
@@ -353,21 +334,32 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.commandName === 'say') {
       const text = interaction.options.getString('text');
-      if (containsBadWord(text)) return interaction.reply({ content: "❌ You cannot make me say that.", ephemeral: true });
+      // Use AI for filter check before sending
+      const { isToxic } = await checkMessageToxicity(text);
+      if (isToxic) return interaction.reply({ content: "❌ That message violates the AI content filter.", ephemeral: true });
+      
       await interaction.channel.send(text);
       return interaction.reply({ content: "✅ Sent anonymously", ephemeral: true });
     }
     
-    // --- NEW AI COMMAND LOGIC ---
+    // --- AI COMMAND LOGIC ---
     if (interaction.commandName === 'ai') {
         // Defer the reply as AI generation can take a moment
         await interaction.deferReply(); 
         const prompt = interaction.options.getString('prompt');
 
+        // Check the prompt for toxicity before processing it
+        const { isToxic: promptIsToxic } = await checkMessageToxicity(prompt);
+        if (promptIsToxic) {
+             return interaction.editReply('❌ Your request was blocked by the safety filter. Please rephrase your question.');
+        }
+
         try {
             const result = await ai.models.generateContent({
                 model: aiModel,
                 contents: [{ role: "user", parts: [{ text: prompt }] }],
+                // The safety settings here will block the *output* if it's unsafe.
+                safetySettings: safetySettings, 
             });
 
             const responseText = result.text.trim();
@@ -381,8 +373,13 @@ client.on('interactionCreate', async (interaction) => {
                 await interaction.editReply(`🤖 **AI Response:**\n\n${responseText}`);
             }
         } catch (error) {
-            console.error('Gemini API Error:', error);
-            await interaction.editReply('❌ I had trouble generating a response from the AI. Check the console for errors. (This usually means a high-volume request or safety filter trigger)');
+            // Check if the error is due to an output block
+            if (error.message && error.message.includes('SAFETY')) {
+                await interaction.editReply('❌ My generated response was blocked by the safety filter. Please try a different prompt.');
+            } else {
+                console.error('Gemini API Error:', error);
+                await interaction.editReply('❌ I had trouble generating a response from the AI. Check the console for errors.');
+            }
         }
         return;
     }
@@ -392,7 +389,10 @@ client.on('interactionCreate', async (interaction) => {
       const character = interaction.options.getString('character');
       const message = interaction.options.getString('message');
       
-      if (containsBadWord(message)) return interaction.reply({ content: "❌ That message violates the filter and cannot be sent.", ephemeral: true });
+      // Use AI for filter check before sending
+      const { isToxic } = await checkMessageToxicity(message);
+      if (isToxic) return interaction.reply({ content: "❌ That message violates the AI content filter and cannot be sent.", ephemeral: true });
+      
       if (interaction.channel.id !== RP_CHANNEL_ID) return interaction.reply({ content: `❌ This command can only be used in the <#${RP_CHANNEL_ID}> channel.`, ephemeral: true });
 
 
@@ -505,6 +505,9 @@ client.on('interactionCreate', async (interaction) => {
   // Button interactions (tickets + thread buttons)
   if (interaction.isButton()) {
     
+    // --- TICKET CREATION, CLAIM, CLOSE LOGIC (omitted for brevity) ---
+    // ... [Your existing ticket logic] ...
+
     // --- TICKET CREATION ---
     if (interaction.customId === 'create_ticket') {
       await interaction.deferReply({ ephemeral: true });
@@ -516,7 +519,11 @@ client.on('interactionCreate', async (interaction) => {
         const short = Math.floor(Math.random() * 9000 + 1000);
         const chanName = `ticket-${username}-${short}`;
 
-        const modRoles = getModeratorRoles(guild);
+        const modRoles = guild.roles.cache.filter(role => {
+            if (role.managed) return false;
+            const p = role.permissions;
+            return p.has(PermissionsBitField.Flags.ManageMessages) || p.has(PermissionsBitField.Flags.ModerateMembers) || p.has(PermissionsBitField.Flags.KickMembers) || p.has(PermissionsBitField.Flags.BanMembers);
+        });
         const overwrites = [
           // Deny everyone from viewing
           { id: guild.roles.everyone.id, deny: [PermissionsBitField.Flags.ViewChannel] },
@@ -685,14 +692,17 @@ client.on('messageCreate', async (message) => {
   const member = message.member;
 
   // Global Check: Identify a pure GIF link
-  // If the message is only a URL containing a GIF host, we skip the word filter.
   const isPureGIFLink = content.trim().length > 0 && 
                         (lowerContent.startsWith('http://') || lowerContent.startsWith('https://')) &&
                         (lowerContent.includes('tenor.com') || lowerContent.includes('giphy.com') || lowerContent.endsWith('.gif')) &&
                         message.attachments.size === 0; 
 
-  // RULE: INAPPROPRIATE RP LOCKDOWN (Specific channel rule, runs first)
-  if (message.channel.id === RP_CHANNEL_ID && containsBadWord(lowerContent)) {
+  // --- AI TOXICITY CHECK ---
+  const { isToxic, blockCategory } = await checkMessageToxicity(content);
+  // -------------------------
+
+  // RULE: INAPPROPRIATE RP LOCKDOWN 
+  if (message.channel.id === RP_CHANNEL_ID && isToxic) {
       const category = message.guild.channels.cache.get(RP_CATEGORY_ID);
       // Check if it's actually a category (type 4)
       if (category && category.type === 4) { 
@@ -704,7 +714,7 @@ client.on('messageCreate', async (message) => {
               }
               await message.delete().catch(() => {});
               const log = client.channels.cache.get(LOG_CHANNEL_ID);
-              if (log) log.send(`🔒 **RP Category Lockdown**\nCategory <#${RP_CATEGORY_ID}> locked down due to suspicious/inappropriate RP attempt by <@${message.author.id}> in <#${RP_CHANNEL_ID}>.\nMessage: ||${message.content}||`);
+              if (log) log.send(`🔒 **RP Category Lockdown**\nCategory <#${RP_CATEGORY_ID}> locked down due to inappropriate RP attempt by <@${message.author.id}> in <#${RP_CHANNEL_ID}>.\nAI Reason: ${blockCategory}\nMessage: ||${message.content}||`);
               return; 
           } catch (e) {
               console.error("Failed to lock RP category:", e);
@@ -719,12 +729,30 @@ client.on('messageCreate', async (message) => {
   }
    
   // --- START GENERAL MODERATION BLOCK ---
-  // Run filters ONLY IF:
-  // 1. The message is NOT in the image-only channel.
-  // 2. The message is NOT a pure GIF link (which we want to allow globally).
   if (message.channel.id !== TARGET_CHANNEL_ID && !isPureGIFLink) {
+    
+    // --- AI MODERATION ACTION ---
+    if (isToxic) {
+      await message.delete().catch(() => {});
+      
+      try {
+        // If the message is flagged by the AI, we treat it as a Severe Violation (Slur/Harassment)
+        if (member && member.manageable) {
+            // Timeout for 30 minutes
+            await member.timeout(30 * 60 * 1000, `AI Detected Severe Violation: ${blockCategory}`).catch(() => {}); 
+        }
+        
+        const log = client.channels.cache.get(LOG_CHANNEL_ID);
+        if (log) log.send(`🚨 **AI Filter Violation (Timeout 30m)**\nUser: <@${message.author.id}>\nAI Reason: ${blockCategory}\nContent: ||${message.content}||`);
+      } catch (e) {
+          console.error("Failed to apply AI moderation action:", e);
+      }
+      return;
+    }
+    // --- END AI MODERATION ACTION ---
 
-    // RULE: ANTI-HARASSMENT / ANTI-TROLLING (MUTE)
+
+    // RULE: ANTI-HARASSMENT / ANTI-TROLLING (MUTE) - KEPT FOR EXPLICIT COMMANDS
     const explicitTrollHarassRegex = /(^|\s)(mute|ban|harass|troll|bullying)\s+(that|him|her|them)\s+(\S+|$)|(you\s+(are|re)\s+(a|an)?\s+(troll|bully|harasser))/i;
 
     if (explicitTrollHarassRegex.test(lowerContent)) {
@@ -746,11 +774,10 @@ client.on('messageCreate', async (message) => {
         return;
     }
     
-    // RULE: SELECTIVE ADVERTISING
+    // RULE: SELECTIVE ADVERTISING (Keep static check, as AI is focused on toxicity)
     const externalAdRegex = /(subscribe to my|go check out my|new video on|follow my insta|patreon|onlyfans|youtube\b|twitch\b|facebook\b|tiktok\b)/i;
     const allowedAds = /(stormy and hops|stormy & hops)/i; // Bot's own promotion
 
-    // If it matches a general ad but DOES NOT mention the allowed ad phrase
     if (externalAdRegex.test(lowerContent) && !allowedAds.test(lowerContent)) {
         await message.delete().catch(() => {});
         const log = client.channels.cache.get(LOG_CHANNEL_ID);
@@ -758,7 +785,7 @@ client.on('messageCreate', async (message) => {
         return;
     }
     
-    // RULE: POLITICAL CONTENT SOFT FILTER
+    // RULE: POLITICAL CONTENT SOFT FILTER (Keep static check)
     const politicalKeywords = ['politics', 'government', 'election', 'congress', 'biden', 'trump', 'conservative', 'liberal', 'democracy', 'republican', 'democrat'];
     let politicalCount = 0;
     for (const keyword of politicalKeywords) {
@@ -767,7 +794,6 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // Deletes message if 4 or more political keywords are used
     if (politicalCount >= 4) {
         await message.delete().catch(() => {});
         const log = client.channels.cache.get(LOG_CHANNEL_ID);
@@ -776,7 +802,7 @@ client.on('messageCreate', async (message) => {
     }
 
 
-    // RULE 7: UNDERAGE CHECK (Admission of being under 13)
+    // RULE 7: UNDERAGE CHECK (Admission of being under 13) (Keep static check)
     const underageRegex = /\b(i|i'm|im)\s+(am\s+)?(under\s+13|1[0-2]|[1-9])\b/i;
     if (underageRegex.test(lowerContent)) {
       await message.delete().catch(() => {});
@@ -785,33 +811,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // --- START REFINED BAD WORD CHECK ---
-    // 1. SEVERE CHECK (Slurs, threats) -> Triggers Timeout (30 min)
-    if (containsFilteredWord(lowerContent, SEVERE_WORDS)) {
-      await message.delete().catch(() => {});
-      
-      try {
-        if (member) await member.timeout(30 * 60 * 1000, "Severe Violation: Slur/Threat/Hate Speech").catch(() => {});
-        
-        const log = client.channels.cache.get(LOG_CHANNEL_ID);
-        if (log) log.send(`🚨 **SEVERE Filter Violation (Timeout)**\nUser: <@${message.author.id}>\nContent: ||${message.content}||`);
-      } catch {}
-      return;
-    }
-    
-    // 2. MILD CHECK (Common swearing) -> Triggers Deletion only
-    if (containsFilteredWord(lowerContent, MILD_BAD_WORDS)) {
-      await message.delete().catch(() => {});
-      
-      try {
-        const log = client.channels.cache.get(LOG_CHANNEL_ID);
-        if (log) log.send(`⚠️ **Mild Filter Violation (Deletion Only)**\nUser: <@${message.author.id}>\nContent: ||${message.content}||`);
-      } catch {}
-      return;
-    }
-    // --- END REFINED BAD WORD CHECK ---
-
-    // RULE 4 & 6: Advertising / Scam / Links
+    // RULE 4 & 6: Advertising / Scam / Links (Keep static check)
     const isAdOrScam = 
       lowerContent.includes('discord.gg/') || 
       lowerContent.includes('free nitro') ||
@@ -826,7 +826,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // RULE 10: No Doxing (Basic IP detection)
+    // RULE 10: No Doxing (Basic IP detection) (Keep static check)
     const ipRegex = /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/;
     if (ipRegex.test(lowerContent)) {
       await message.delete().catch(() => {});
@@ -924,7 +924,7 @@ client.on('interactionCreate', async (interaction) => {
 
   if (interaction.customId === 'archive_thread' || interaction.customId === 'edit_title') {
     const thread = interaction.channel;
-    if (!thread || !thread.isThread()) {
+    if (!(thread instanceof ThreadChannel)) {
       return interaction.reply({ content: "❌ Use this command inside a thread.", ephemeral: true });
     }
     
