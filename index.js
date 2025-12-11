@@ -65,16 +65,14 @@ const MILD_BAD_WORDS = [
   "shit", "s*it", "s**t", "sh!t",
   "ass", "bitch", "hoe", "whore", "slut", "cunt", 
   "dick", "pussy", "cock", "bastard", "sexy",
-  "dumbass", 
 ];
 
-// 2. WORDS THAT TRIGGER A TIMEOUT (Slurs, threats, hate speech, NSFW terms, extreme trolling)
+// 2. WORDS THAT TRIGGER A TIMEOUT (Slurs, threats, hate speech, extreme trolling)
 const SEVERE_WORDS = [
   "nigger", "nigga", "niga", "faggot", "fag", "dyke", "tranny", "chink", "kike", "paki", "gook", "spic", "beaner", "coon", 
   "retard", "spastic", "mong", "autist",
   "kys", "kill yourself", "suicide", "rape", "molest",
   "hitler", "nazi", "kkk",
-  "porn", "p*rn", "r34", "rule34", 
   "joke about harassing", "troll joke", "harassment funny", "trolling funny", "trollin", "troller"
 ];
 
@@ -289,10 +287,6 @@ client.once('ready', async () => {
     new SlashCommandBuilder()
       .setName('setup')
       .setDescription('Post the ticket creation message in the tickets channel'),
-
-    new SlashCommandBuilder()
-      .setName('pure')
-      .setDescription('Clean recent messages that violate the bad words filter'),
       
   ].map(c => c.toJSON());
 
@@ -329,7 +323,7 @@ client.on('interactionCreate', async (interaction) => {
     const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ModerateMembers) || interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages);
 
     // --- MOD ONLY COMMANDS CHECK ---
-    if (['kick','ban','unban','timeout','setup','pure'].includes(interaction.commandName) && !isMod) {
+    if (['kick','ban','unban','timeout','setup'].includes(interaction.commandName) && !isMod) {
       return interaction.reply({ content: '❌ Mods only', ephemeral: true });
     }
     
@@ -434,34 +428,6 @@ client.on('interactionCreate', async (interaction) => {
       const duration = minutes * 60 * 1000;
       await member.timeout(duration);
       return interaction.reply({ content: `✅ Timed out ${user.tag} for ${minutes} minutes`, ephemeral: true });
-    }
-
-    if (interaction.commandName === 'pure') {
-        await interaction.deferReply({ ephemeral: true });
-        
-        try {
-            // Fetch last 100 messages
-            const messages = await interaction.channel.messages.fetch({ limit: 100 });
-            
-            // Filter messages that contain bad words
-            const badMessages = messages.filter(m => containsBadWord(m.content));
-            
-            if (badMessages.size === 0) {
-                return interaction.editReply({ content: "✅ Scan complete. No filtered words found in the last 100 messages." });
-            }
-
-            // Delete them
-            await interaction.channel.bulkDelete(badMessages, true); // true = filter out old messages automatically
-            
-            const log = interaction.guild.channels.cache.get(LOG_CHANNEL_ID);
-            if (log) log.send(`🧹 **Purge Command**\nUser: ${interaction.user.tag}\nAction: Purged ${badMessages.size} messages containing bad words in <#${interaction.channel.id}>.`);
-            
-            return interaction.editReply({ content: `✅ Detected and deleted ${badMessages.size} messages containing filtered words.` });
-
-        } catch (error) {
-            console.error("Purge error:", error);
-            return interaction.editReply({ content: "❌ Failed to purge messages. Messages might be too old (>14 days) or bot lacks permissions." });
-        }
     }
 
     // --- Ticket Setup Command ---
@@ -666,25 +632,14 @@ client.on('messageCreate', async (message) => {
   const lowerContent = content.toLowerCase();
   const member = message.member;
 
-  // --- START: IMAGE CHANNEL WORD FILTER EXEMPTION ---
-  // If the message is a pure media post in the Image Channel, we skip the word filter rules.
-  let shouldRunWordFilter = true;
+  // Global Check: Identify a pure GIF link
+  // If the message is only a URL containing a GIF host, we skip the word filter.
+  const isPureGIFLink = content.trim().length > 0 && 
+                        (lowerContent.startsWith('http://') || lowerContent.startsWith('https://')) &&
+                        (lowerContent.includes('tenor.com') || lowerContent.includes('giphy.com') || lowerContent.endsWith('.gif')) &&
+                        message.attachments.size === 0; 
 
-  if (message.channel.id === TARGET_CHANNEL_ID) {
-      // Check if the message is ONLY a link containing a whitelisted domain
-      const isPureMediaLink = content.trim().startsWith('http') && 
-                              (lowerContent.includes('tenor.com') || lowerContent.includes('giphy.com'));
-      
-      // Check if the message is just an attachment with no text
-      const isPureAttachment = message.attachments.size > 0 && content.trim().length === 0;
-
-      if (isPureMediaLink || isPureAttachment) {
-          shouldRunWordFilter = false;
-      }
-  }
-  // --- END: IMAGE CHANNEL WORD FILTER EXEMPTION ---
-
-  // RULE: INAPPROPRIATE RP LOCKDOWN 
+  // RULE: INAPPROPRIATE RP LOCKDOWN (Specific channel rule, runs first)
   if (message.channel.id === RP_CHANNEL_ID && containsBadWord(lowerContent)) {
       const category = message.guild.channels.cache.get(RP_CATEGORY_ID);
       // Check if it's actually a category (type 4)
@@ -705,9 +660,18 @@ client.on('messageCreate', async (message) => {
           }
       }
   }
+
+  // RULE 5: INAPPROPRIATE USERNAME CHECK (on message send - always runs)
+  if (member) {
+    await moderateNickname(member);
+  }
    
-  // RULES THAT SHOULD RUN ON ALL NON-PURE-MEDIA MESSAGES
-  if (shouldRunWordFilter) {
+  // --- START GENERAL MODERATION BLOCK ---
+  // Run filters ONLY IF:
+  // 1. The message is NOT in the image-only channel (which has its own logic below).
+  // 2. The message is NOT a pure GIF link (which we want to allow globally).
+  if (message.channel.id !== TARGET_CHANNEL_ID && !isPureGIFLink) {
+
     // RULE: ANTI-HARASSMENT / ANTI-TROLLING (MUTE)
     const explicitTrollHarassRegex = /(^|\s)(mute|ban|harass|troll|bullying)\s+(that|him|her|them)\s+(\S+|$)|(you\s+(are|re)\s+(a|an)?\s+(troll|bully|harasser))/i;
 
@@ -782,13 +746,14 @@ client.on('messageCreate', async (message) => {
       } catch {}
       return;
     }
-     
+    
     // 2. MILD CHECK (Common swearing) -> Triggers Deletion only
     if (containsFilteredWord(lowerContent, MILD_BAD_WORDS)) {
       await message.delete().catch(() => {});
       
       try {
         const log = client.channels.cache.get(LOG_CHANNEL_ID);
+        // THIS IS THE LOG ENTRY THAT WAS HAPPENING TO YOUR GIFS
         if (log) log.send(`⚠️ **Mild Filter Violation (Deletion Only)**\nUser: <@${message.author.id}>\nContent: ||${message.content}||`);
       } catch {}
       return;
@@ -818,38 +783,28 @@ client.on('messageCreate', async (message) => {
       if (log) log.send(`⚠️ **Possible Dox Attempt**\nUser: <@${message.author.id}>\nContent: ||${message.content}||`);
       return;
     }
-  } // END if (shouldRunWordFilter)
+  } // --- END GENERAL MODERATION BLOCK ---
 
-  // RULE 5: INAPPROPRIATE USERNAME CHECK (on message send - always runs)
-  if (member) {
-    await moderateNickname(member);
-  }
 
-  // IMAGE ONLY CHANNEL THREAD SYSTEM
+  // IMAGE ONLY CHANNEL THREAD SYSTEM 
   if (message.channel.id === TARGET_CHANNEL_ID) {
     
-    // 1. Check for Attachments (Any file uploaded)
+    // Check 1: Attachments (images/videos uploaded)
     const hasAttachment = message.attachments.size > 0;
 
-    // 2. Check for Allowed Link Terms (GIFs, Videos, Images)
-    const allowedTerms = [
-        'tenor.com',
-        'giphy.com',
-        'imgur.com',
-        '.gif',
-        '.png',
-        '.jpg',
-        '.jpeg',
-        '.webp',
-        '.mp4',
-        '.mov'
-    ];
-    
-    // Checks if the message content (lowercased) contains ANY of the terms above
-    const hasValidLink = allowedTerms.some(term => lowerContent.includes(term));
+    // Check 2: Valid Media Links (URLs that Discord embeds, including Tenor/Giphy)
+    // isPureGIFLink is sufficient to cover most media links here, but we re-check for other direct links
+    const isMediaLink = 
+        lowerContent.includes('imgur.com') || 
+        lowerContent.includes('.png') || 
+        lowerContent.includes('.jpe') || // Catches .jpg and .jpeg
+        lowerContent.includes('.webp') ||
+        lowerContent.includes('.mp4') ||
+        lowerContent.includes('.mov') ||
+        isPureGIFLink; // Include the pure GIF check here too
 
-    // If it has NEITHER an attachment NOR a valid link term, delete it.
-    if (!hasAttachment && !hasValidLink) {
+    // If it has NEITHER an attachment NOR a valid media link, it's pure text or an invalid link, so delete it.
+    if (!hasAttachment && !isMediaLink) {
       await message.delete().catch(() => {});
       return;
     }
