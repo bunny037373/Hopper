@@ -666,6 +666,24 @@ client.on('messageCreate', async (message) => {
   const lowerContent = content.toLowerCase();
   const member = message.member;
 
+  // --- START: IMAGE CHANNEL WORD FILTER EXEMPTION ---
+  // If the message is a pure media post in the Image Channel, we skip the word filter rules.
+  let shouldRunWordFilter = true;
+
+  if (message.channel.id === TARGET_CHANNEL_ID) {
+      // Check if the message is ONLY a link containing a whitelisted domain
+      const isPureMediaLink = content.trim().startsWith('http') && 
+                              (lowerContent.includes('tenor.com') || lowerContent.includes('giphy.com'));
+      
+      // Check if the message is just an attachment with no text
+      const isPureAttachment = message.attachments.size > 0 && content.trim().length === 0;
+
+      if (isPureMediaLink || isPureAttachment) {
+          shouldRunWordFilter = false;
+      }
+  }
+  // --- END: IMAGE CHANNEL WORD FILTER EXEMPTION ---
+
   // RULE: INAPPROPRIATE RP LOCKDOWN 
   if (message.channel.id === RP_CHANNEL_ID && containsBadWord(lowerContent)) {
       const category = message.guild.channels.cache.get(RP_CATEGORY_ID);
@@ -688,131 +706,132 @@ client.on('messageCreate', async (message) => {
       }
   }
    
-  // RULE: ANTI-HARASSMENT / ANTI-TROLLING (MUTE)
-  const explicitTrollHarassRegex = /(^|\s)(mute|ban|harass|troll|bullying)\s+(that|him|her|them)\s+(\S+|$)|(you\s+(are|re)\s+(a|an)?\s+(troll|bully|harasser))/i;
+  // RULES THAT SHOULD RUN ON ALL NON-PURE-MEDIA MESSAGES
+  if (shouldRunWordFilter) {
+    // RULE: ANTI-HARASSMENT / ANTI-TROLLING (MUTE)
+    const explicitTrollHarassRegex = /(^|\s)(mute|ban|harass|troll|bullying)\s+(that|him|her|them)\s+(\S+|$)|(you\s+(are|re)\s+(a|an)?\s+(troll|bully|harasser))/i;
 
-  if (explicitTrollHarassRegex.test(lowerContent)) {
-      await message.delete().catch(() => {});
+    if (explicitTrollHarassRegex.test(lowerContent)) {
+        await message.delete().catch(() => {});
 
-      const muteRole = message.guild.roles.cache.get(MUTE_ROLE_ID);
-      if (member && member.manageable) {
-          try {
-              // Timeout for 60 minutes
-              await member.timeout(60 * 60 * 1000, "Trolling/Harassment detected"); 
-              
-              const log = client.channels.cache.get(LOG_CHANNEL_ID);
-              if (log) log.send(`🛑 **Harassment/Trolling Mute**\nUser: <@${message.author.id}> timed out for 60m.\nContent: ||${message.content}||\nReason: Detected explicit command or statement of harassment/trolling/bullying.`);
-              
-          } catch (e) {
-              console.error("Failed to mute/log troll:", e);
-          }
-      }
-      return;
-  }
-   
-  // RULE: SELECTIVE ADVERTISING
-  const externalAdRegex = /(subscribe to my|go check out my|new video on|follow my insta|patreon|onlyfans|youtube\b|twitch\b|facebook\b|tiktok\b)/i;
-  const allowedAds = /(stormy and hops|stormy & hops)/i; // Bot's own promotion
+        const muteRole = message.guild.roles.cache.get(MUTE_ROLE_ID);
+        if (member && member.manageable) {
+            try {
+                // Timeout for 60 minutes
+                await member.timeout(60 * 60 * 1000, "Trolling/Harassment detected"); 
+                
+                const log = client.channels.cache.get(LOG_CHANNEL_ID);
+                if (log) log.send(`🛑 **Harassment/Trolling Mute**\nUser: <@${message.author.id}> timed out for 60m.\nContent: ||${message.content}||\nReason: Detected explicit command or statement of harassment/trolling/bullying.`);
+                
+            } catch (e) {
+                console.error("Failed to mute/log troll:", e);
+            }
+        }
+        return;
+    }
+    
+    // RULE: SELECTIVE ADVERTISING
+    const externalAdRegex = /(subscribe to my|go check out my|new video on|follow my insta|patreon|onlyfans|youtube\b|twitch\b|facebook\b|tiktok\b)/i;
+    const allowedAds = /(stormy and hops|stormy & hops)/i; // Bot's own promotion
 
-  // If it matches a general ad but DOES NOT mention the allowed ad phrase
-  if (externalAdRegex.test(lowerContent) && !allowedAds.test(lowerContent)) {
+    // If it matches a general ad but DOES NOT mention the allowed ad phrase
+    if (externalAdRegex.test(lowerContent) && !allowedAds.test(lowerContent)) {
+        await message.delete().catch(() => {});
+        const log = client.channels.cache.get(LOG_CHANNEL_ID);
+        if (log) log.send(`📢 **Advertising Deleted**\nUser: <@${message.author.id}>\nContent: ||${message.content}||\nReason: External promotion/subscription attempt.`);
+        return;
+    }
+    
+    // RULE: POLITICAL CONTENT SOFT FILTER
+    const politicalKeywords = ['politics', 'government', 'election', 'congress', 'biden', 'trump', 'conservative', 'liberal', 'democracy', 'republican', 'democrat'];
+    let politicalCount = 0;
+    for (const keyword of politicalKeywords) {
+        if (lowerContent.includes(keyword)) {
+            politicalCount++;
+        }
+    }
+
+    // Deletes message if 4 or more political keywords are used
+    if (politicalCount >= 4) {
+        await message.delete().catch(() => {});
+        const log = client.channels.cache.get(LOG_CHANNEL_ID);
+        if (log) log.send(`🗳️ **Political Content Filter**\nUser: <@${message.author.id}>\nContent: ||${message.content}||\nReason: Excessive political content (Count: ${politicalCount}).`);
+        return;
+    }
+
+
+    // RULE 7: UNDERAGE CHECK (Admission of being under 13)
+    const underageRegex = /\b(i|i'm|im)\s+(am\s+)?(under\s+13|1[0-2]|[1-9])\b/i;
+    if (underageRegex.test(lowerContent)) {
       await message.delete().catch(() => {});
       const log = client.channels.cache.get(LOG_CHANNEL_ID);
-      if (log) log.send(`📢 **Advertising Deleted**\nUser: <@${message.author.id}>\nContent: ||${message.content}||\nReason: External promotion/subscription attempt.`);
+      if (log) log.send(`👶 **Underage Admission Detected**\nUser: <@${message.author.id}>\nContent: ||${message.content}||\nAction: Deleted immediately.`);
       return;
-  }
-   
-  // RULE: POLITICAL CONTENT SOFT FILTER
-  const politicalKeywords = ['politics', 'government', 'election', 'congress', 'biden', 'trump', 'conservative', 'liberal', 'democracy', 'republican', 'democrat'];
-  let politicalCount = 0;
-  for (const keyword of politicalKeywords) {
-      if (lowerContent.includes(keyword)) {
-          politicalCount++;
-      }
-  }
+    }
 
-  // Deletes message if 4 or more political keywords are used
-  if (politicalCount >= 4) {
+    // --- START REFINED BAD WORD CHECK ---
+    // 1. SEVERE CHECK (Slurs, threats) -> Triggers Timeout (30 min)
+    if (containsFilteredWord(lowerContent, SEVERE_WORDS)) {
+      await message.delete().catch(() => {});
+      
+      try {
+        if (member) await member.timeout(30 * 60 * 1000, "Severe Violation: Slur/Threat/Hate Speech").catch(() => {});
+        
+        const log = client.channels.cache.get(LOG_CHANNEL_ID);
+        if (log) log.send(`🚨 **SEVERE Filter Violation (Timeout)**\nUser: <@${message.author.id}>\nContent: ||${message.content}||`);
+      } catch {}
+      return;
+    }
+     
+    // 2. MILD CHECK (Common swearing) -> Triggers Deletion only
+    if (containsFilteredWord(lowerContent, MILD_BAD_WORDS)) {
+      await message.delete().catch(() => {});
+      
+      try {
+        const log = client.channels.cache.get(LOG_CHANNEL_ID);
+        if (log) log.send(`⚠️ **Mild Filter Violation (Deletion Only)**\nUser: <@${message.author.id}>\nContent: ||${message.content}||`);
+      } catch {}
+      return;
+    }
+    // --- END REFINED BAD WORD CHECK ---
+
+    // RULE 4 & 6: Advertising / Scam / Links
+    const isAdOrScam = 
+      lowerContent.includes('discord.gg/') || 
+      lowerContent.includes('free nitro') ||
+      lowerContent.includes('steam gift') ||
+      lowerContent.includes('crypto') ||
+      lowerContent.includes('bitcoin');
+
+    if (isAdOrScam) {
       await message.delete().catch(() => {});
       const log = client.channels.cache.get(LOG_CHANNEL_ID);
-      if (log) log.send(`🗳️ **Political Content Filter**\nUser: <@${message.author.id}>\nContent: ||${message.content}||\nReason: Excessive political content (Count: ${politicalCount}).`);
+      if (log) log.send(`🔗 **Link/Scam Deleted**\nUser: <@${message.author.id}>\nContent: ||${message.content}||`);
       return;
-  }
+    }
 
+    // RULE 10: No Doxing (Basic IP detection)
+    const ipRegex = /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/;
+    if (ipRegex.test(lowerContent)) {
+      await message.delete().catch(() => {});
+      const log = client.channels.cache.get(LOG_CHANNEL_ID);
+      if (log) log.send(`⚠️ **Possible Dox Attempt**\nUser: <@${message.author.id}>\nContent: ||${message.content}||`);
+      return;
+    }
+  } // END if (shouldRunWordFilter)
 
-  // RULE 7: UNDERAGE CHECK (Admission of being under 13)
-  const underageRegex = /\b(i|i'm|im)\s+(am\s+)?(under\s+13|1[0-2]|[1-9])\b/i;
-  if (underageRegex.test(lowerContent)) {
-    await message.delete().catch(() => {});
-    const log = client.channels.cache.get(LOG_CHANNEL_ID);
-    if (log) log.send(`👶 **Underage Admission Detected**\nUser: <@${message.author.id}>\nContent: ||${message.content}||\nAction: Deleted immediately.`);
-    return;
-  }
-
-  // RULE 5: INAPPROPRIATE USERNAME CHECK (on message send)
+  // RULE 5: INAPPROPRIATE USERNAME CHECK (on message send - always runs)
   if (member) {
     await moderateNickname(member);
-  }
-
-  // --- START REFINED BAD WORD CHECK ---
-  // 1. SEVERE CHECK (Slurs, threats) -> Triggers Timeout (30 min)
-  if (containsFilteredWord(lowerContent, SEVERE_WORDS)) {
-    await message.delete().catch(() => {});
-    
-    try {
-      if (member) await member.timeout(30 * 60 * 1000, "Severe Violation: Slur/Threat/Hate Speech").catch(() => {});
-      
-      const log = client.channels.cache.get(LOG_CHANNEL_ID);
-      if (log) log.send(`🚨 **SEVERE Filter Violation (Timeout)**\nUser: <@${message.author.id}>\nContent: ||${message.content}||`);
-    } catch {}
-    return;
-  }
-   
-  // 2. MILD CHECK (Common swearing) -> Triggers Deletion only
-  if (containsFilteredWord(lowerContent, MILD_BAD_WORDS)) {
-    await message.delete().catch(() => {});
-    
-    try {
-      const log = client.channels.cache.get(LOG_CHANNEL_ID);
-      if (log) log.send(`⚠️ **Mild Filter Violation (Deletion Only)**\nUser: <@${message.author.id}>\nContent: ||${message.content}||`);
-    } catch {}
-    return;
-  }
-  // --- END REFINED BAD WORD CHECK ---
-
-  // RULE 4 & 6: Advertising / Scam / Links
-  const isAdOrScam = 
-    lowerContent.includes('discord.gg/') || 
-    lowerContent.includes('free nitro') ||
-    lowerContent.includes('steam gift') ||
-    lowerContent.includes('crypto') ||
-    lowerContent.includes('bitcoin');
-
-  if (isAdOrScam) {
-    await message.delete().catch(() => {});
-    const log = client.channels.cache.get(LOG_CHANNEL_ID);
-    if (log) log.send(`🔗 **Link/Scam Deleted**\nUser: <@${message.author.id}>\nContent: ||${message.content}||`);
-    return;
-  }
-
-  // RULE 10: No Doxing (Basic IP detection)
-  const ipRegex = /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/;
-  if (ipRegex.test(lowerContent)) {
-    await message.delete().catch(() => {});
-    const log = client.channels.cache.get(LOG_CHANNEL_ID);
-    if (log) log.send(`⚠️ **Possible Dox Attempt**\nUser: <@${message.author.id}>\nContent: ||${message.content}||`);
-    return;
   }
 
   // IMAGE ONLY CHANNEL THREAD SYSTEM
   if (message.channel.id === TARGET_CHANNEL_ID) {
     
     // 1. Check for Attachments (Any file uploaded)
-    // .size returns the number of attachments. If > 0, there is a file.
     const hasAttachment = message.attachments.size > 0;
 
     // 2. Check for Allowed Link Terms (GIFs, Videos, Images)
-    // We use a simple list check to see if the message contains permitted domains or extensions.
     const allowedTerms = [
         'tenor.com',
         'giphy.com',
