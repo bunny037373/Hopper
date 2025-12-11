@@ -65,6 +65,7 @@ const MILD_BAD_WORDS = [
   "shit", "s*it", "s**t", "sh!t",
   "ass", "bitch", "hoe", "whore", "slut", "cunt", 
   "dick", "pussy", "cock", "bastard", "sexy",
+  "dumbass", // Added as requested
 ];
 
 // 2. WORDS THAT TRIGGER A TIMEOUT (Slurs, threats, hate speech, NSFW terms, extreme trolling)
@@ -73,7 +74,7 @@ const SEVERE_WORDS = [
   "retard", "spastic", "mong", "autist",
   "kys", "kill yourself", "suicide", "rape", "molest",
   "hitler", "nazi", "kkk",
-  "porn", "p*rn", "r34", "rule34", // Added censored terms here
+  "porn", "p*rn", "r34", "rule34", 
   "joke about harassing", "troll joke", "harassment funny", "trolling funny", "trollin", "troller"
 ];
 
@@ -288,6 +289,10 @@ client.once('ready', async () => {
     new SlashCommandBuilder()
       .setName('setup')
       .setDescription('Post the ticket creation message in the tickets channel'),
+
+    new SlashCommandBuilder()
+      .setName('pure')
+      .setDescription('Clean recent messages that violate the bad words filter'),
       
   ].map(c => c.toJSON());
 
@@ -324,7 +329,7 @@ client.on('interactionCreate', async (interaction) => {
     const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ModerateMembers) || interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages);
 
     // --- MOD ONLY COMMANDS CHECK ---
-    if (['kick','ban','unban','timeout','setup'].includes(interaction.commandName) && !isMod) {
+    if (['kick','ban','unban','timeout','setup','pure'].includes(interaction.commandName) && !isMod) {
       return interaction.reply({ content: '❌ Mods only', ephemeral: true });
     }
     
@@ -429,6 +434,34 @@ client.on('interactionCreate', async (interaction) => {
       const duration = minutes * 60 * 1000;
       await member.timeout(duration);
       return interaction.reply({ content: `✅ Timed out ${user.tag} for ${minutes} minutes`, ephemeral: true });
+    }
+
+    if (interaction.commandName === 'pure') {
+        await interaction.deferReply({ ephemeral: true });
+        
+        try {
+            // Fetch last 100 messages
+            const messages = await interaction.channel.messages.fetch({ limit: 100 });
+            
+            // Filter messages that contain bad words
+            const badMessages = messages.filter(m => containsBadWord(m.content));
+            
+            if (badMessages.size === 0) {
+                return interaction.editReply({ content: "✅ Scan complete. No filtered words found in the last 100 messages." });
+            }
+
+            // Delete them
+            await interaction.channel.bulkDelete(badMessages, true); // true = filter out old messages automatically
+            
+            const log = interaction.guild.channels.cache.get(LOG_CHANNEL_ID);
+            if (log) log.send(`🧹 **Purge Command**\nUser: ${interaction.user.tag}\nAction: Purged ${badMessages.size} messages containing bad words in <#${interaction.channel.id}>.`);
+            
+            return interaction.editReply({ content: `✅ Detected and deleted ${badMessages.size} messages containing filtered words.` });
+
+        } catch (error) {
+            console.error("Purge error:", error);
+            return interaction.editReply({ content: "❌ Failed to purge messages. Messages might be too old (>14 days) or bot lacks permissions." });
+        }
     }
 
     // --- Ticket Setup Command ---
@@ -774,18 +807,22 @@ client.on('messageCreate', async (message) => {
   // IMAGE ONLY CHANNEL THREAD SYSTEM
   if (message.channel.id === TARGET_CHANNEL_ID) {
     
-    // 1. Check for File Attachments (Images/GIFs uploaded directly)
+    // 1. Check for File Attachments (Images/GIFs/Videos uploaded directly)
     const hasAttachment = message.attachments.some(att =>
       att.contentType?.startsWith('image/') ||
-      att.contentType?.startsWith('video/') || // Allow video/gifs
+      att.contentType?.startsWith('video/') || 
       att.name?.match(/\.(jpg|jpeg|png|gif|webp|mp4|mov)$/i)
     );
 
-    // 2. Check for Link-based GIFs (Tenor, Giphy, Imgur, or direct GIF links)
-    const hasGifLink = /https?:\/\/(www\.)?(tenor\.com|giphy\.com|imgur\.com|.*\.(gif|webp))/i.test(message.content);
+    // 2. Check for Link-based Media (Tenor, Giphy, Imgur, or direct links ending in extensions)
+    // Checks for specific domains OR for links ending in media extensions
+    const hasMediaLink = /(https?:\/\/[^\s]+)/g.test(message.content) && (
+        /tenor\.com|giphy\.com|imgur\.com/i.test(message.content) || 
+        /\.(gif|png|jpg|jpeg|webp|mp4|mov)(\?|$)/i.test(message.content)
+    );
 
-    // If it has NEITHER an attachment NOR a GIF link, delete it.
-    if (!hasAttachment && !hasGifLink) {
+    // If it has NEITHER an attachment NOR a valid media link, delete it.
+    if (!hasAttachment && !hasMediaLink) {
       await message.delete().catch(() => {});
       return;
     }
