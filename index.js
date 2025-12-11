@@ -65,7 +65,7 @@ const MILD_BAD_WORDS = [
   "shit", "s*it", "s**t", "sh!t",
   "ass", "bitch", "hoe", "whore", "slut", "cunt", 
   "dick", "pussy", "cock", "bastard", "sexy",
-  "dumbass", // Added as requested
+  "dumbass", 
 ];
 
 // 2. WORDS THAT TRIGGER A TIMEOUT (Slurs, threats, hate speech, NSFW terms, extreme trolling)
@@ -807,22 +807,30 @@ client.on('messageCreate', async (message) => {
   // IMAGE ONLY CHANNEL THREAD SYSTEM
   if (message.channel.id === TARGET_CHANNEL_ID) {
     
-    // 1. Check for File Attachments (Images/GIFs/Videos uploaded directly)
-    const hasAttachment = message.attachments.some(att =>
-      att.contentType?.startsWith('image/') ||
-      att.contentType?.startsWith('video/') || 
-      att.name?.match(/\.(jpg|jpeg|png|gif|webp|mp4|mov)$/i)
-    );
+    // 1. Check for Attachments (Any file uploaded)
+    // .size returns the number of attachments. If > 0, there is a file.
+    const hasAttachment = message.attachments.size > 0;
 
-    // 2. Check for Link-based Media (Tenor, Giphy, Imgur, or direct links ending in extensions)
-    // Checks for specific domains OR for links ending in media extensions
-    const hasMediaLink = /(https?:\/\/[^\s]+)/g.test(message.content) && (
-        /tenor\.com|giphy\.com|imgur\.com/i.test(message.content) || 
-        /\.(gif|png|jpg|jpeg|webp|mp4|mov)(\?|$)/i.test(message.content)
-    );
+    // 2. Check for Allowed Link Terms (GIFs, Videos, Images)
+    // We use a simple list check to see if the message contains permitted domains or extensions.
+    const allowedTerms = [
+        'tenor.com',
+        'giphy.com',
+        'imgur.com',
+        '.gif',
+        '.png',
+        '.jpg',
+        '.jpeg',
+        '.webp',
+        '.mp4',
+        '.mov'
+    ];
+    
+    // Checks if the message content (lowercased) contains ANY of the terms above
+    const hasValidLink = allowedTerms.some(term => lowerContent.includes(term));
 
-    // If it has NEITHER an attachment NOR a valid media link, delete it.
-    if (!hasAttachment && !hasMediaLink) {
+    // If it has NEITHER an attachment NOR a valid link term, delete it.
+    if (!hasAttachment && !hasValidLink) {
       await message.delete().catch(() => {});
       return;
     }
