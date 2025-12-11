@@ -12,11 +12,22 @@ const {
 } = require('discord.js');
 const http = require('http');
 
+// --- AI Import ---
+const { GoogleGenAI } = require('@google/genai');
+// -----------------
+
 // Check for the mandatory token environment variable
 if (!process.env.TOKEN) {
   console.error("❌ TOKEN not found. Add TOKEN in Render Environment Variables.");
   process.exit(1);
 }
+
+// --- AI Key Check ---
+if (!process.env.GEMINI_API_KEY) {
+  console.error("❌ GEMINI_API_KEY not found. Add GEMINI_API_KEY in Render Environment Variables to enable AI.");
+  process.exit(1);
+}
+// --------------------
 
 // ====================== CRITICAL CONFIGURATION: REPLACE THESE ======================
 
@@ -88,6 +99,9 @@ const LEET_MAP = {
 // ================= JOIN/LEAVE TRACKER =================
 const joinTracker = new Map(); 
 
+// ================= AI INITIALIZATION =================
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const aiModel = 'gemini-2.5-flash';
 // =====================================================
 
 const client = new Client({
@@ -117,7 +131,8 @@ function containsFilteredWord(text, wordList) {
   // --- STEP 1: REMOVE ALLOWED WORDS ---
   ALLOWED_WORDS.forEach(safeWord => {
       if (lower.includes(safeWord)) {
-          lower = lower.replaceAll(safeWord, '');
+          // Use a simple replacement to avoid accidental matching after normalization
+          lower = lower.replaceAll(safeWord, ''); 
       }
   });
 
@@ -243,6 +258,13 @@ client.once('ready', async () => {
       .setDescription('Make the bot say something anonymously')
       .addStringOption(opt => opt.setName('text').setDescription('Text for the bot to say').setRequired(true)),
 
+    // --- NEW AI COMMAND ---
+    new SlashCommandBuilder()
+      .setName('ai')
+      .setDescription('Ask the Google AI (Gemini) a question.')
+      .addStringOption(opt => opt.setName('prompt').setDescription('Your question for the AI').setRequired(true)),
+    // ----------------------
+      
     new SlashCommandBuilder()
       .setName('sayrp')
       .setDescription('Speak as a character (uses bot to send message)')
@@ -335,6 +357,36 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.channel.send(text);
       return interaction.reply({ content: "✅ Sent anonymously", ephemeral: true });
     }
+    
+    // --- NEW AI COMMAND LOGIC ---
+    if (interaction.commandName === 'ai') {
+        // Defer the reply as AI generation can take a moment
+        await interaction.deferReply(); 
+        const prompt = interaction.options.getString('prompt');
+
+        try {
+            const result = await ai.models.generateContent({
+                model: aiModel,
+                contents: [{ role: "user", parts: [{ text: prompt }] }],
+            });
+
+            const responseText = result.text.trim();
+
+            // Discord has a 2000 character limit
+            if (responseText.length > 2000) {
+                // Split the response and send in multiple messages or trim
+                const shortenedResponse = responseText.substring(0, 1900) + '... (truncated)';
+                await interaction.editReply(`🤖 **AI Response (Truncated):**\n\n${shortenedResponse}`);
+            } else {
+                await interaction.editReply(`🤖 **AI Response:**\n\n${responseText}`);
+            }
+        } catch (error) {
+            console.error('Gemini API Error:', error);
+            await interaction.editReply('❌ I had trouble generating a response from the AI. Check the console for errors. (This usually means a high-volume request or safety filter trigger)');
+        }
+        return;
+    }
+    // -----------------------------
 
     if (interaction.commandName === 'sayrp') {
       const character = interaction.options.getString('character');
@@ -668,7 +720,7 @@ client.on('messageCreate', async (message) => {
    
   // --- START GENERAL MODERATION BLOCK ---
   // Run filters ONLY IF:
-  // 1. The message is NOT in the image-only channel (which has its own logic below).
+  // 1. The message is NOT in the image-only channel.
   // 2. The message is NOT a pure GIF link (which we want to allow globally).
   if (message.channel.id !== TARGET_CHANNEL_ID && !isPureGIFLink) {
 
@@ -753,7 +805,6 @@ client.on('messageCreate', async (message) => {
       
       try {
         const log = client.channels.cache.get(LOG_CHANNEL_ID);
-        // THIS IS THE LOG ENTRY THAT WAS HAPPENING TO YOUR GIFS
         if (log) log.send(`⚠️ **Mild Filter Violation (Deletion Only)**\nUser: <@${message.author.id}>\nContent: ||${message.content}||`);
       } catch {}
       return;
@@ -793,15 +844,13 @@ client.on('messageCreate', async (message) => {
     const hasAttachment = message.attachments.size > 0;
 
     // Check 2: Valid Media Links (URLs that Discord embeds, including Tenor/Giphy)
-    // isPureGIFLink is sufficient to cover most media links here, but we re-check for other direct links
-    const isMediaLink = 
+    const isMediaLink = isPureGIFLink || // Now uses the global check
         lowerContent.includes('imgur.com') || 
         lowerContent.includes('.png') || 
         lowerContent.includes('.jpe') || // Catches .jpg and .jpeg
         lowerContent.includes('.webp') ||
         lowerContent.includes('.mp4') ||
-        lowerContent.includes('.mov') ||
-        isPureGIFLink; // Include the pure GIF check here too
+        lowerContent.includes('.mov');
 
     // If it has NEITHER an attachment NOR a valid media link, it's pure text or an invalid link, so delete it.
     if (!hasAttachment && !isMediaLink) {
