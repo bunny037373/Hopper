@@ -67,12 +67,13 @@ const MILD_BAD_WORDS = [
   "dick", "pussy", "cock", "bastard", "sexy",
 ];
 
-// 2. WORDS THAT TRIGGER A TIMEOUT (Slurs, threats, hate speech, extreme trolling)
+// 2. WORDS THAT TRIGGER A TIMEOUT (Slurs, threats, hate speech, NSFW terms, extreme trolling)
 const SEVERE_WORDS = [
   "nigger", "nigga", "niga", "faggot", "fag", "dyke", "tranny", "chink", "kike", "paki", "gook", "spic", "beaner", "coon", 
   "retard", "spastic", "mong", "autist",
   "kys", "kill yourself", "suicide", "rape", "molest",
   "hitler", "nazi", "kkk",
+  "porn", "p*rn", "r34", "rule34", // Added censored terms here
   "joke about harassing", "troll joke", "harassment funny", "trolling funny", "trollin", "troller"
 ];
 
@@ -772,12 +773,19 @@ client.on('messageCreate', async (message) => {
 
   // IMAGE ONLY CHANNEL THREAD SYSTEM
   if (message.channel.id === TARGET_CHANNEL_ID) {
-    const hasImage = message.attachments.some(att =>
+    
+    // 1. Check for File Attachments (Images/GIFs uploaded directly)
+    const hasAttachment = message.attachments.some(att =>
       att.contentType?.startsWith('image/') ||
-      att.name?.match(/\.(jpg|jpeg|png|gif)$/i)
+      att.contentType?.startsWith('video/') || // Allow video/gifs
+      att.name?.match(/\.(jpg|jpeg|png|gif|webp|mp4|mov)$/i)
     );
 
-    if (!hasImage) {
+    // 2. Check for Link-based GIFs (Tenor, Giphy, Imgur, or direct GIF links)
+    const hasGifLink = /https?:\/\/(www\.)?(tenor\.com|giphy\.com|imgur\.com|.*\.(gif|webp))/i.test(message.content);
+
+    // If it has NEITHER an attachment NOR a GIF link, delete it.
+    if (!hasAttachment && !hasGifLink) {
       await message.delete().catch(() => {});
       return;
     }
