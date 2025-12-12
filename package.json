@@ -2,13 +2,12 @@
   "name": "hopper-discord-bot",
   "version": "1.0.0",
   "description": "A feature-rich Discord bot with moderation, filters, and custom systems.",
-  "main": "index 2.js",
+  "main": "index.js",
   "scripts": {
-    "start": "node \"index 2.js\""
+    "start": "node index.js"
   },
   "dependencies": {
     "discord.js": "^14.14.1",
-    "http": "^0.0.1-security",
     "@google/genai": "latest" 
   },
   "keywords": [
