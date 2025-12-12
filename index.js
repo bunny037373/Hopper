@@ -37,7 +37,8 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent, // Required to read message content for moderation/AFK
     GatewayIntentBits.GuildMembers,   // Required for member-based features (kicks, bans, nickname check, join/leave)
-    GatewayIntentBits.GuildMessageReactions // Good practice for reaction usage
+    GatewayIntentBits.GuildMessageReactions, // Required for reacting/thread handling
+    GatewayIntentBits.MessageCreate
   ]
 });
 // =========================================================================================
@@ -78,8 +79,6 @@ channel to create a more helpful environment to tell a mod`;
 // ================= AI INITIALIZATION & CONFIGURATION =================
 
 // Configure Safety Settings: This is the key to AI-based content moderation.
-// We set a very strict threshold (BLOCK_LOW_AND_ABOVE) for Hate Speech and Harassment
-// to ensure the bot catches slurs and toxic language with high sensitivity.
 const safetySettings = [
   {
     category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
@@ -109,16 +108,12 @@ async function checkMessageToxicity(text) {
       safetySettings: safetySettings,
     });
 
-    // The Gemini API response will be blocked if any of the custom safety 
-    // settings (like BLOCK_LOW_AND_ABOVE for Hate Speech) are triggered.
     if (response.candidates && response.candidates.length > 0) {
         const candidate = response.candidates[0];
         
         if (candidate.finishReason === 'SAFETY') {
             const blockedCategory = candidate.safetyRatings.map(r => {
-                // Check if the rating shows the content was blocked for this category
                 if (r.probability === 'MEDIUM' || r.probability === 'HIGH' || r.probability === 'LOW') {
-                    // This is a simple way to approximate which filter caused the block
                     return r.category;
                 }
                 return null;
@@ -127,14 +122,10 @@ async function checkMessageToxicity(text) {
             return { isToxic: true, blockCategory: blockedCategory || 'Unknown' };
         }
     }
-    // If the response is not blocked and content is generated, it's considered safe.
     return { isToxic: false, blockCategory: 'None' };
 
   } catch (error) {
-    // This catches API errors (like rate limits or key issues)
     console.error('Gemini Moderation API Error:', error);
-    // If there is an error, default to SAFE to avoid false positives and
-    // keep the bot running, but log the issue.
     return { isToxic: false, blockCategory: 'API_Error' }; 
   }
 }
@@ -144,18 +135,15 @@ async function checkMessageToxicity(text) {
 // ================= JOIN/LEAVE TRACKER =================
 const joinTracker = new Map(); 
 
-// ====================== NEW AFK STORAGE ======================
+// ====================== AFK STORAGE ======================
 /**
  * Stores AFK data: Key is userId, Value is { reason: string, time: number }
  */
 const afkStatus = new Map(); 
 // =============================================================
 
-// Helper: Moderate Nickname (NOTE: This still uses a word list and is outside the AI check)
+// Helper: Moderate Nickname 
 async function moderateNickname(member) {
-  // *** NOTE: For nickname moderation, we must use a static list or a dedicated 
-  // moderation API endpoint, as the Gemini model is optimized for chat/text generation.
-  // We'll use a very strict check for the nickname to minimize false positives.
   const NICKNAME_FILTER_WORDS = ["fuck", "shit", "ass", "bitch", "hoe", "whore", "slut", "cunt", "dick", "pussy", "cock", "nigger", "nigga", "faggot", "dyke", "tranny", "kys", "kill yourself"];
   let displayName = member.displayName.toLowerCase().replace(/[^a-z0-9]/g, '');
 
@@ -185,10 +173,10 @@ async function runAutomatedNicknameScan(guild) {
     let moderatedCount = 0;
     
     try {
+        // Ensure members are cached for the scan
         const members = await guild.members.fetch(); 
         
         for (const [id, member] of members) {
-            // Skip bots
             if (member.user.bot) continue;
             
             if (await moderateNickname(member)) {
@@ -210,10 +198,8 @@ async function runAutomatedNicknameScan(guild) {
  * Starts the recurring nickname scan.
  */
 function startAutomatedNicknameScan(guild) {
-    // Run once immediately
     runAutomatedNicknameScan(guild); 
     
-    // Set up interval for recurring runs
     setInterval(() => {
         runAutomatedNicknameScan(guild);
     }, NICKNAME_SCAN_INTERVAL);
@@ -252,19 +238,18 @@ client.once('ready', async () => {
   }
 
 
-  // Register slash commands
+  // Register slash commands (NOTE: /afk is now a prefix command and removed from here)
   const commands = [
     new SlashCommandBuilder()
       .setName('say')
       .setDescription('Make the bot say something anonymously')
       .addStringOption(opt => opt.setName('text').setDescription('Text for the bot to say').setRequired(true)),
 
-    // --- NEW AI COMMAND ---
+    // --- AI COMMAND ---
     new SlashCommandBuilder()
       .setName('ai')
       .setDescription('Ask the Google AI (Gemini) a question.')
       .addStringOption(opt => opt.setName('prompt').setDescription('Your question for the AI').setRequired(true)),
-    // ----------------------
       
     new SlashCommandBuilder()
       .setName('sayrp')
@@ -311,16 +296,6 @@ client.once('ready', async () => {
       .setName('setup')
       .setDescription('Post the ticket creation message in the tickets channel'),
       
-    // --- NEW AFK COMMAND ---
-    new SlashCommandBuilder()
-      .setName('afk')
-      .setDescription('Set your AFK status and message.')
-      .addStringOption(opt => 
-        opt.setName('reason')
-          .setDescription('The message to display when someone pings you (e.g., "Hello!").')
-          .setRequired(false) // Reason is optional
-      ),
-    // ----------------------
   ].map(c => c.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
@@ -349,7 +324,7 @@ client.on('guildCreate', async (guild) => {
     }
 });
 
-// ================= SLASH COMMANDS =================
+// ================= SLASH COMMANDS AND BUTTONS =================
 client.on('interactionCreate', async (interaction) => {
   if (interaction.isChatInputCommand()) {
     // Check if the user is a moderator based on permissions
@@ -364,7 +339,6 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.commandName === 'say') {
       const text = interaction.options.getString('text');
-      // Use AI for filter check before sending
       const { isToxic } = await checkMessageToxicity(text);
       if (isToxic) return interaction.reply({ content: "❌ That message violates the AI content filter.", ephemeral: true });
       
@@ -374,11 +348,9 @@ client.on('interactionCreate', async (interaction) => {
     
     // --- AI COMMAND LOGIC ---
     if (interaction.commandName === 'ai') {
-        // Defer the reply as AI generation can take a moment
         await interaction.deferReply(); 
         const prompt = interaction.options.getString('prompt');
 
-        // Check the prompt for toxicity before processing it
         const { isToxic: promptIsToxic } = await checkMessageToxicity(prompt);
         if (promptIsToxic) {
              return interaction.editReply('❌ Your request was blocked by the safety filter. Please rephrase your question.');
@@ -388,22 +360,18 @@ client.on('interactionCreate', async (interaction) => {
             const result = await ai.models.generateContent({
                 model: aiModel,
                 contents: [{ role: "user", parts: [{ text: prompt }] }],
-                // The safety settings here will block the *output* if it's unsafe.
                 safetySettings: safetySettings, 
             });
 
             const responseText = result.text.trim();
 
-            // Discord has a 2000 character limit
             if (responseText.length > 2000) {
-                // Split the response and send in multiple messages or trim
                 const shortenedResponse = responseText.substring(0, 1900) + '... (truncated)';
                 await interaction.editReply(`🤖 **AI Response (Truncated):**\n\n${shortenedResponse}`);
             } else {
                 await interaction.editReply(`🤖 **AI Response:**\n\n${responseText}`);
             }
         } catch (error) {
-            // Check if the error is due to an output block
             if (error.message && error.message.includes('SAFETY')) {
                 await interaction.editReply('❌ My generated response was blocked by the safety filter. Please try a different prompt.');
             } else {
@@ -419,7 +387,6 @@ client.on('interactionCreate', async (interaction) => {
       const character = interaction.options.getString('character');
       const message = interaction.options.getString('message');
       
-      // Use AI for filter check before sending
       const { isToxic } = await checkMessageToxicity(message);
       if (isToxic) return interaction.reply({ content: "❌ That message violates the AI content filter and cannot be sent.", ephemeral: true });
       
@@ -434,7 +401,6 @@ client.on('interactionCreate', async (interaction) => {
         contentToSend = `**Stormy Bunny:** ${message}`;
         replyContent = `✅ Message sent as **Stormy**!`;
         
-        // Attach image only if the URL is set correctly
         if (STORMY_IMAGE_URL && !STORMY_IMAGE_URL.includes('YOUR_LINK')) {
             fileAttachment = [{ attachment: STORMY_IMAGE_URL, name: 'stormy_rp_image.png' }];
         } else {
@@ -452,11 +418,9 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.channel.send({
           content: contentToSend,
           files: fileAttachment ? fileAttachment : [],
-          // Disable mentions in the message
           allowedMentions: { parse: [] }
         });
         
-        // Reply privately to the user
         await interaction.reply({ content: replyContent, ephemeral: true });
 
       } catch (error) {
@@ -512,25 +476,7 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ content: `✅ Timed out ${user.tag} for ${minutes} minutes`, ephemeral: true });
     }
     
-    // --- NEW AFK COMMAND LOGIC ---
-    if (interaction.commandName === 'afk') {
-      const reason = interaction.options.getString('reason') || 'I am currently away.';
-      const userId = interaction.user.id;
-      
-      // Store AFK status
-      afkStatus.set(userId, { reason: reason, time: Date.now() });
-
-      // Send confirmation reply
-      await interaction.reply({ 
-          content: `✅ You are now AFK. Message: **${reason}**. Anyone who pings you will see this.`, 
-          ephemeral: false // Send non-ephemeral so the whole channel sees the AFK announcement
-      });
-      return;
-    }
-    // -----------------------------
-
     // --- Ticket Setup Command ---
-
     if (interaction.commandName === 'setup') {
       try {
         const postChannel = await client.channels.fetch(SETUP_POST_CHANNEL);
@@ -569,20 +515,15 @@ client.on('interactionCreate', async (interaction) => {
             return p.has(PermissionsBitField.Flags.ManageMessages) || p.has(PermissionsBitField.Flags.ModerateMembers) || p.has(PermissionsBitField.Flags.KickMembers) || p.has(PermissionsBitField.Flags.BanMembers);
         });
         const overwrites = [
-          // Deny everyone from viewing
           { id: guild.roles.everyone.id, deny: [PermissionsBitField.Flags.ViewChannel] },
-          // Allow ticket creator to view/send
           { id: member.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory] },
-          // Allow bot to manage
           { id: client.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ManageChannels, PermissionsBitField.Flags.ReadMessageHistory] }
         ];
 
-        // Allow mod roles to view/manage
         modRoles.forEach(role => {
           overwrites.push({ id: role.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory, PermissionsBitField.Flags.ManageMessages] });
         });
 
-        // Try to set the category to the same as the setup channel
         let parent = null;
         try {
           const setupChan = await client.channels.fetch(SETUP_POST_CHANNEL);
@@ -591,7 +532,7 @@ client.on('interactionCreate', async (interaction) => {
 
         const ticketChannel = await interaction.guild.channels.create({
           name: chanName,
-          type: 0, // Text channel
+          type: 0, 
           permissionOverwrites: overwrites,
           parent: parent,
           reason: `Ticket created by ${member.user.tag}`
@@ -599,13 +540,11 @@ client.on('interactionCreate', async (interaction) => {
 
         await interaction.editReply({ content: `Ticket created: ${ticketChannel}`, ephemeral: true });
 
-        // Send a notification to the setup channel
         try {
           const setupChan = await client.channels.fetch(SETUP_POST_CHANNEL);
           await setupChan.send(`Ticket created ${ticketChannel} — added to Tickets catalog`);
         } catch {}
 
-        // Mention up to 5 mod roles
         let modMention = '';
         if (modRoles.size > 0) {
           modMention = modRoles.map(r => `<@&${r.id}>`).slice(0, 5).join(' ');
@@ -645,7 +584,6 @@ If they want to close it there will be a Close button on top. When close is conf
       }
 
       try {
-        // Use channel topic to mark as claimed
         await ch.setTopic(`claimed:${interaction.user.id}`);
         await interaction.reply({ content: `✅ Ticket claimed by ${interaction.user.tag}`, ephemeral: true });
         await ch.send(`✅ Ticket claimed by <@${interaction.user.id}>`);
@@ -682,9 +620,8 @@ If they want to close it there will be a Close button on top. When close is conf
       await interaction.deferReply({ ephemeral: true });
 
       try {
-        // Fetch last 100 messages for transcript
         const fetched = await ch.messages.fetch({ limit: 100 });
-        const msgs = Array.from(fetched.values()).reverse(); // Reverse for chronological order
+        const msgs = Array.from(fetched.values()).reverse(); 
 
         let transcript = `Transcript for ${ch.name} (closed by ${interaction.user.tag})\n\n`;
         for (const m of msgs) {
@@ -695,14 +632,12 @@ If they want to close it there will be a Close button on top. When close is conf
           transcript += `[${time}] ${author}: ${content} ${atts}\n`;
         }
 
-        // Send transcript to the dedicated channel
         const tChan = await client.channels.fetch(TRANSCRIPT_CHANNEL_ID);
         if (tChan) {
           const MAX = 1900;
           if (transcript.length <= MAX) {
             await tChan.send({ content: `📄 **Ticket closed**: ${ch.name}\nClosed by ${interaction.user.tag}\n\n${transcript}` });
           } else {
-            // Split long transcripts
             await tChan.send({ content: `📄 **Ticket closed**: ${ch.name}\nClosed by ${interaction.user.tag}\n\nTranscript (first part):` });
             while (transcript.length > 0) {
               const part = transcript.slice(0, MAX);
@@ -724,6 +659,46 @@ If they want to close it there will be a Close button on top. When close is conf
     if (interaction.customId === 'confirm_close_no') {
       return interaction.reply({ content: 'Close cancelled.', ephemeral: true });
     }
+    
+    // ================== THREAD BUTTONS LOGIC ==================
+    if (interaction.customId === 'archive_thread' || interaction.customId === 'edit_title') {
+      const thread = interaction.channel;
+      // CRITICAL: Checks if the interaction is happening in a thread
+      if (!(thread instanceof ThreadChannel)) { 
+        return interaction.reply({ content: "❌ Use this command inside a thread.", ephemeral: true });
+      }
+      
+      // Check if user is the thread creator OR a moderator (ManageMessages)
+      const isThreadStarter = thread.ownerId === interaction.user.id;
+      const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages);
+
+      if (!isThreadStarter && !isMod) {
+          return interaction.reply({ content: "❌ Only the thread creator or a moderator can use these controls.", ephemeral: true });
+      }
+
+      if (interaction.customId === 'archive_thread') {
+        await thread.setArchived(true);
+        return interaction.reply({ content: "✅ Archived", ephemeral: true });
+      }
+
+      if (interaction.customId === 'edit_title') {
+        await interaction.reply({ content: "Send the new title in the thread. You have 30 seconds.", ephemeral: true });
+        // Create a message collector for the next message from the user
+        const filter = m => m.author.id === interaction.user.id && m.channelId === thread.id;
+        const collector = thread.createMessageCollector({ filter, time: 30000, max: 1 });
+        collector.on('collect', async (msg) => {
+          try {
+              // Set thread name, limited to 100 characters
+              await thread.setName(msg.content.slice(0, 100)); 
+              await msg.delete();
+              await interaction.followUp({ content: "✅ Title updated", ephemeral: true });
+          } catch (e) {
+              console.error("Failed to edit thread title:", e);
+              await interaction.followUp({ content: "❌ Failed to update title (Permissions or length)", ephemeral: true });
+          }
+        });
+      }
+    }
   }
 });
 
@@ -734,17 +709,16 @@ client.on('messageCreate', async (message) => {
   const content = message.content;
   const lowerContent = content.toLowerCase();
   const member = message.member;
+  const userId = message.author.id;
   
   // -------------------------------------------------------------
-  // --- NEW AFK CHECK - MUST RUN BEFORE ALL OTHER CHECKS ---
+  // --- AFK REMOVAL AND PING CHECK ---
   // -------------------------------------------------------------
-  const userId = message.author.id;
   
   // 1. CHECK FOR RETURNING USER (If the author is currently AFK)
   if (afkStatus.has(userId)) {
       afkStatus.delete(userId); // Remove AFK status
 
-      // Note: The custom emoji ID is hardcoded from your request.
       const returnMessage = `hello <@${userId}>! Toon your AFK has been removed <:happymissdiamond:1448752668259647619>`;
       
       try {
@@ -762,17 +736,43 @@ client.on('messageCreate', async (message) => {
   // 2. CHECK FOR AFK PING (If the message mentions an AFK user)
   if (message.mentions.users.size > 0) {
       message.mentions.users.forEach(async (mentionedUser) => {
-          // Check if the mentioned user is AFK AND is not the author of the message
           if (afkStatus.has(mentionedUser.id) && mentionedUser.id !== userId) {
               const afkData = afkStatus.get(mentionedUser.id);
               
-              // Send the AFK reply message
               await message.reply({ 
                   content: `<@${mentionedUser.id}> is currently AFK: **${afkData.reason}**`,
-                  allowedMentions: { repliedUser: false } // Do not ping the user who sent the message
+                  allowedMentions: { repliedUser: false } 
               }).catch(e => console.log('Failed to send AFK reply:', e));
           }
       });
+  }
+  // -------------------------------------------------------------
+  
+  // -------------------------------------------------------------
+  // --- NEW AFK PREFIX COMMAND CHECK: ?afk [reason] ---
+  // -------------------------------------------------------------
+  if (lowerContent.startsWith('?afk')) {
+      const reason = content.slice(4).trim() || 'I am currently away.';
+      
+      // Filter check on the reason
+      const { isToxic } = await checkMessageToxicity(reason);
+      if (isToxic) {
+          await message.delete().catch(() => {});
+          return message.channel.send(`❌ <@${userId}>: Your AFK reason was blocked by the safety filter.`);
+      }
+
+      // Store AFK status
+      afkStatus.set(userId, { reason: reason, time: Date.now() });
+
+      try {
+          // Send a confirmation message
+          await message.channel.send(`✅ <@${userId}> is now AFK. Message: **${reason}**`);
+          // Delete the original command message
+          await message.delete().catch(() => {}); 
+      } catch (e) {
+          console.error("Failed to execute/delete ?afk command:", e);
+      }
+      return; // Stop further processing as the message was a command
   }
   // -------------------------------------------------------------
 
@@ -790,12 +790,10 @@ client.on('messageCreate', async (message) => {
   // RULE: INAPPROPRIATE RP LOCKDOWN 
   if (message.channel.id === RP_CHANNEL_ID && isToxic) {
       const category = message.guild.channels.cache.get(RP_CATEGORY_ID);
-      // Check if it's actually a category (type 4)
       if (category && category.type === 4) { 
           try {
               const everyoneRole = message.guild.roles.cache.find(r => r.name === '@everyone');
               if (everyoneRole) {
-                  // Deny @everyone view access
                   await category.permissionOverwrites.edit(everyoneRole, { ViewChannel: false });
               }
               await message.delete().catch(() => {});
@@ -822,7 +820,6 @@ client.on('messageCreate', async (message) => {
       await message.delete().catch(() => {});
       
       try {
-        // If the message is flagged by the AI, we treat it as a Severe Violation (Slur/Harassment)
         if (member && member.manageable) {
             // Timeout for 30 minutes
             await member.timeout(30 * 60 * 1000, `AI Detected Severe Violation: ${blockCategory}`).catch(() => {}); 
@@ -844,7 +841,6 @@ client.on('messageCreate', async (message) => {
     if (explicitTrollHarassRegex.test(lowerContent)) {
         await message.delete().catch(() => {});
 
-        const muteRole = message.guild.roles.cache.get(MUTE_ROLE_ID);
         if (member && member.manageable) {
             try {
                 // Timeout for 60 minutes
@@ -860,9 +856,9 @@ client.on('messageCreate', async (message) => {
         return;
     }
     
-    // RULE: SELECTIVE ADVERTISING (Keep static check, as AI is focused on toxicity)
+    // RULE: SELECTIVE ADVERTISING
     const externalAdRegex = /(subscribe to my|go check out my|new video on|follow my insta|patreon|onlyfans|youtube\b|twitch\b|facebook\b|tiktok\b)/i;
-    const allowedAds = /(stormy and hops|stormy & hops)/i; // Bot's own promotion
+    const allowedAds = /(stormy and hops|stormy & hops)/i; 
 
     if (externalAdRegex.test(lowerContent) && !allowedAds.test(lowerContent)) {
         await message.delete().catch(() => {});
@@ -871,7 +867,7 @@ client.on('messageCreate', async (message) => {
         return;
     }
     
-    // RULE: POLITICAL CONTENT SOFT FILTER (Keep static check)
+    // RULE: POLITICAL CONTENT SOFT FILTER
     const politicalKeywords = ['politics', 'government', 'election', 'congress', 'biden', 'trump', 'conservative', 'liberal', 'democracy', 'republican', 'democrat'];
     let politicalCount = 0;
     for (const keyword of politicalKeywords) {
@@ -888,7 +884,7 @@ client.on('messageCreate', async (message) => {
     }
 
 
-    // RULE 7: UNDERAGE CHECK (Admission of being under 13) (Keep static check)
+    // RULE 7: UNDERAGE CHECK (Admission of being under 13)
     const underageRegex = /\b(i|i'm|im)\s+(am\s+)?(under\s+13|1[0-2]|[1-9])\b/i;
     if (underageRegex.test(lowerContent)) {
       await message.delete().catch(() => {});
@@ -897,7 +893,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // RULE 4 & 6: Advertising / Scam / Links (Keep static check)
+    // RULE 4 & 6: Advertising / Scam / Links
     const isAdOrScam = 
       lowerContent.includes('discord.gg/') || 
       lowerContent.includes('free nitro') ||
@@ -912,7 +908,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // RULE 10: No Doxing (Basic IP detection) (Keep static check)
+    // RULE 10: No Doxing (Basic IP detection)
     const ipRegex = /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/;
     if (ipRegex.test(lowerContent)) {
       await message.delete().catch(() => {});
@@ -929,11 +925,11 @@ client.on('messageCreate', async (message) => {
     // Check 1: Attachments (images/videos uploaded)
     const hasAttachment = message.attachments.size > 0;
 
-    // Check 2: Valid Media Links (URLs that Discord embeds, including Tenor/Giphy)
-    const isMediaLink = isPureGIFLink || // Now uses the global check
+    // Check 2: Valid Media Links
+    const isMediaLink = isPureGIFLink || 
         lowerContent.includes('imgur.com') || 
         lowerContent.includes('.png') || 
-        lowerContent.includes('.jpe') || // Catches .jpg and .jpeg
+        lowerContent.includes('.jpe') || 
         lowerContent.includes('.webp') ||
         lowerContent.includes('.mp4') ||
         lowerContent.includes('.mov');
@@ -969,16 +965,13 @@ client.on('messageCreate', async (message) => {
 
 // ================= RULE 11: JOIN/LEAVE TROLLING =================
 client.on('guildMemberAdd', async (member) => {
-  // RULE 5: Check Nickname on Join
   await moderateNickname(member);
 
   const userId = member.id;
   const now = Date.now();
    
-  // Get or initialize join data
   const userData = joinTracker.get(userId) || { count: 0, lastJoin: 0 };
 
-  // Reset count if the last join was more than 15 minutes ago
   if (now - userData.lastJoin > 15 * 60 * 1000) {
     userData.count = 0;
   }
@@ -987,7 +980,6 @@ client.on('guildMemberAdd', async (member) => {
   userData.lastJoin = now;
   joinTracker.set(userId, userData);
 
-  // If the user has joined 10 times in 15 minutes, ban them
   if (userData.count >= 10) {
     try {
       await member.ban({ reason: 'Rule 11: Excessive Join/Leave Trolling' });
@@ -998,52 +990,8 @@ client.on('guildMemberAdd', async (member) => {
       console.error('Failed to ban troll:', err);
     }
   } else if (userData.count >= 6) {
-    // Warning after 6 rapid joins
     const log = client.channels.cache.get(LOG_CHANNEL_ID);
     if (log) log.send(`⚠️ **Troll Warning**\nUser: ${member.user.tag} has joined ${userData.count} times recently.`);
-  }
-});
-
-// ================= THREAD BUTTONS =================
-client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isButton()) return;
-
-  if (interaction.customId === 'archive_thread' || interaction.customId === 'edit_title') {
-    const thread = interaction.channel;
-    if (!(thread instanceof ThreadChannel)) {
-      return interaction.reply({ content: "❌ Use this command inside a thread.", ephemeral: true });
-    }
-    
-    // Check if user is the thread creator OR a moderator
-    const isThreadStarter = thread.ownerId === interaction.user.id;
-    const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages);
-
-    if (!isThreadStarter && !isMod) {
-        return interaction.reply({ content: "❌ Only the thread creator or a moderator can use these controls.", ephemeral: true });
-    }
-
-    if (interaction.customId === 'archive_thread') {
-      await thread.setArchived(true);
-      return interaction.reply({ content: "✅ Archived", ephemeral: true });
-    }
-
-    if (interaction.customId === 'edit_title') {
-      await interaction.reply({ content: "Send the new title in the thread. You have 30 seconds.", ephemeral: true });
-      // Create a message collector for the next message from the user
-      const filter = m => m.author.id === interaction.user.id && m.channelId === thread.id;
-      const collector = thread.createMessageCollector({ filter, time: 30000, max: 1 });
-      collector.on('collect', async (msg) => {
-        try {
-            // Set thread name, limited to 100 characters
-            await thread.setName(msg.content.slice(0, 100)); 
-            await msg.delete();
-            await interaction.followUp({ content: "✅ Title updated", ephemeral: true });
-        } catch (e) {
-            console.error("Failed to edit thread title:", e);
-            await interaction.followUp({ content: "❌ Failed to update title (Permissions or length)", ephemeral: true });
-        }
-      });
-    }
   }
 });
 
