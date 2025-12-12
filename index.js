@@ -59,6 +59,21 @@ const MUTE_ROLE_ID = '1446530920650899536';        // <<--- REPLACE with your Mu
 const RP_CHANNEL_ID = '1421219064985948346';      // <<--- REPLACE with your Roleplay Channel ID
 const RP_CATEGORY_ID = '1446530920650899536';      // <<--- REPLACE with your Roleplay Category ID (for lockdown)
 
+// --- LEVELING/XP CONFIGURATION ---
+const AFK_XP_EXCLUSION_CHANNEL_ID = '1414352027034583080';
+const BOOSTER_ROLE_ID = '1400596498969923685'; 
+
+// Level Role Map (cleaned IDs from user input)
+const LEVEL_ROLES = {
+    5: '1418567907662630964',
+    10: '1418568030132244611',
+    15: '1418568206662238269',
+    20: '1418568333229559978', 
+    30: '1418568692819824741',
+    50: '1418568903411372063', 
+    100: '1441563487565250692',
+};
+
 // ====================== END CRITICAL CONFIGURATION ======================
 
 
@@ -74,6 +89,117 @@ Please go to https://discord.com/channels/${GUILD_ID}/1414304297122009099
 and for more assistance please use
 https://discord.com/channels/${GUILD_ID}/1414352972304879626
 channel to create a more helpful environment to tell a mod`;
+
+// ====================== IN-MEMORY DATA STORAGE ======================
+/**
+ * Stores XP/Level data: { userId: { xp: number, level: number } } 
+ * NOTE: This data resets when the bot restarts.
+ */
+const userLevels = {}; 
+const xpCooldown = new Map(); // { userId: timestamp for next XP gain }
+const dailyCooldown = new Map(); // { userId: timestamp for next daily claim }
+const joinTracker = new Map(); 
+const afkStatus = new Map(); 
+// ====================================================================
+
+// ====================== LEVELING SYSTEM FUNCTIONS ======================
+
+/**
+ * Calculates the level from raw XP using the formula: 5*L^2 + 50*L + 100.
+ * @param {number} totalXp 
+ * @returns {{level: number, xpForNext: number, xpNeeded: number}}
+ */
+function calculateLevel(totalXp) {
+    let level = 0;
+    let xpRemaining = totalXp;
+    let xpNeeded = 100;
+
+    while (xpRemaining >= xpNeeded) {
+        xpRemaining -= xpNeeded;
+        level++;
+        xpNeeded = 5 * level * level + 50 * level + 100;
+    }
+
+    return { level, xpForNext: xpNeeded, xpNeeded: xpRemaining };
+}
+
+
+/**
+ * Handles adding and removing level roles.
+ * @param {object} member Discord.js GuildMember
+ * @param {number} newLevel The user's current level.
+ */
+async function handleLevelRoles(member, newLevel) {
+    const guild = member.guild;
+    const levelKeys = Object.keys(LEVEL_ROLES).map(Number).sort((a, b) => b - a);
+
+    try {
+        let roleToAddId = null;
+        
+        // 1. Determine the highest role to grant
+        for (const levelThreshold of levelKeys) {
+            if (newLevel >= levelThreshold) {
+                roleToAddId = LEVEL_ROLES[levelThreshold];
+                break;
+            }
+        }
+
+        // 2. Add the highest role and remove all others
+        for (const levelThreshold of levelKeys) {
+            const roleId = LEVEL_ROLES[levelThreshold];
+            const role = guild.roles.cache.get(roleId);
+
+            if (!role) continue;
+
+            if (roleId === roleToAddId) {
+                if (!member.roles.cache.has(roleId)) {
+                    await member.roles.add(role, `Level up to ${newLevel} or set by moderator.`);
+                }
+            } else {
+                if (member.roles.cache.has(roleId)) {
+                    await member.roles.remove(role, 'Removing outdated level role.');
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Failed to handle level up roles:', e);
+    }
+}
+
+/**
+ * Adds XP, checks for level up, and applies rewards.
+ * @param {object} member Discord.js GuildMember
+ * @param {number} xpAmount XP to add
+ * @param {object} message Discord.js Message (optional, used to send level up message)
+ */
+async function addXP(member, xpAmount, message = null) {
+    const userId = member.id;
+    
+    // Initialize user data if needed
+    if (!userLevels[userId]) {
+        userLevels[userId] = { xp: 0, level: 0 };
+    }
+    
+    const oldLevel = userLevels[userId].level;
+    userLevels[userId].xp += xpAmount;
+    
+    const { level } = calculateLevel(userLevels[userId].xp);
+    
+    userLevels[userId].level = level;
+    
+    if (level > oldLevel) {
+        // --- LEVEL UP MESSAGE ---
+        if (message && message.channel) {
+            message.channel.send(`${member.toString()} wow toon! You are now level **${level}**! Keep messaging and you unlock new level up roles!`);
+        }
+        
+        // --- ROLE REWARD LOGIC ---
+        await handleLevelRoles(member, level);
+    }
+}
+
+// ====================== END LEVELING SYSTEM FUNCTIONS ======================
+
 
 // ====================== MANUAL WORD FILTER CONFIG ======================
 
@@ -203,15 +329,6 @@ async function checkMessageToxicity(text) {
 
 // ================= END AI INITIALIZATION & CONFIGURATION =================
 
-// ================= JOIN/LEAVE TRACKER =================
-const joinTracker = new Map(); 
-
-// ====================== AFK STORAGE ======================
-/**
- * Stores AFK data: Key is userId, Value is { reason: string, time: number }
- */
-const afkStatus = new Map(); 
-// =============================================================
 
 // Helper: Moderate Nickname 
 async function moderateNickname(member) {
@@ -325,18 +442,73 @@ client.once('ready', async () => {
       .setDescription('Make the bot say something anonymously')
       .addStringOption(opt => opt.setName('text').setDescription('Text for the bot to say').setRequired(true)),
 
-    // --- AI COMMAND: RENAMED TO /ASK AND FOCUSED ON STORMY/HOPS ---
     new SlashCommandBuilder()
       .setName('ask') 
-      .setDescription('Search about stormy and hops') // <-- Updated Description
-      .addStringOption(opt => opt.setName('prompt').setDescription('Your question for Hopper').setRequired(true)), // <-- Updated to Hopper
+      .setDescription('Search about stormy and hops') 
+      .addStringOption(opt => opt.setName('prompt').setDescription('Your question for Hopper').setRequired(true)), 
       
-    // The /sayrp command has been removed as requested.
-
     new SlashCommandBuilder().setName('help').setDescription('Get help'),
     new SlashCommandBuilder().setName('serverinfo').setDescription('Get server information'),
 
-    // Mod Commands
+    // --- New Utility/Mod Commands ---
+    new SlashCommandBuilder()
+      .setName('clear')
+      .setDescription('Delete a number of messages to clean chat (Mod only)')
+      .addIntegerOption(opt => opt.setName('number').setDescription('Number of messages (1-100)').setRequired(true)),
+      
+    new SlashCommandBuilder()
+      .setName('lock')
+      .setDescription('Lock a channel to prevent messages (Mod only)')
+      .addChannelOption(opt => opt.setName('channel').setDescription('Channel to lock (default: current)').setRequired(false)),
+      
+    new SlashCommandBuilder()
+      .setName('unlock')
+      .setDescription('Unlock a channel (Mod only)')
+      .addChannelOption(opt => opt.setName('channel').setDescription('Channel to unlock (default: current)').setRequired(false)),
+
+    new SlashCommandBuilder()
+      .setName('userinfo')
+      .setDescription('Shows user info and join date')
+      .addUserOption(opt => opt.setName('user').setDescription('User to check (default: self)').setRequired(false)),
+
+    // --- Leveling/XP Commands ---
+    new SlashCommandBuilder()
+        .setName('daily')
+        .setDescription('Claim your daily rewards (XP).'),
+
+    new SlashCommandBuilder()
+        .setName('leaderboard')
+        .setDescription('Show top members by level and XP.'),
+
+    new SlashCommandBuilder()
+        .setName('quest')
+        .setDescription('Get a small task or challenge (placeholder).'),
+        
+    new SlashCommandBuilder()
+        .setName('rank')
+        .setDescription('Show your current level, XP, and rank card (customizable feature placeholder).')
+        .addUserOption(opt => opt.setName('user').setDescription('User to check (default: self)').setRequired(false)),
+
+    // --- XP Mod Commands (Moderator only) ---
+    new SlashCommandBuilder()
+        .setName('givexp')
+        .setDescription('Give a user XP (Mod only)')
+        .addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true))
+        .addIntegerOption(opt => opt.setName('xp').setDescription('Amount of XP').setRequired(true)),
+        
+    new SlashCommandBuilder()
+        .setName('takeawayxp')
+        .setDescription('Take away a user XP (Mod only)')
+        .addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true))
+        .addIntegerOption(opt => opt.setName('xp').setDescription('Amount of XP').setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName('changelevel')
+        .setDescription('Set a user to a specific level (Mod only)')
+        .addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true))
+        .addIntegerOption(opt => opt.setName('level').setDescription('Target level').setRequired(true)),
+
+    // Mod Commands (Existing)
     new SlashCommandBuilder()
       .setName('kick')
       .setDescription('Kick a member')
@@ -394,9 +566,16 @@ client.on('guildCreate', async (guild) => {
 client.on('interactionCreate', async (interaction) => {
   if (interaction.isChatInputCommand()) {
     const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ModerateMembers) || interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages);
+    const isChannelMod = interaction.member.permissions.has(PermissionsBitField.Flags.ManageChannels);
+    
+    const modCommands = ['kick','ban','unban','timeout','setup', 'givexp', 'takeawayxp', 'changelevel'];
+    const channelModCommands = ['clear', 'lock', 'unlock'];
 
-    if (['kick','ban','unban','timeout','setup'].includes(interaction.commandName) && !isMod) {
-      return interaction.reply({ content: '❌ Mods only', ephemeral: true });
+    if (modCommands.includes(interaction.commandName) && !isMod) {
+        return interaction.reply({ content: '❌ Mods only', ephemeral: true });
+    }
+    if (channelModCommands.includes(interaction.commandName) && !isMod && !isChannelMod) {
+         return interaction.reply({ content: '❌ Need Manage Messages or Manage Channels permission.', ephemeral: true });
     }
     
     if (interaction.commandName === 'say') {
@@ -412,7 +591,6 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.deferReply(); 
         const prompt = interaction.options.getString('prompt');
 
-        // Check against the manual filter first (since /ask is typically about the show, it should pass unless it's a prompt trying to sneak in bad words)
         const manualFilter = filterMessageManually(prompt);
         if (manualFilter.isSevere || manualFilter.isMild) {
             return interaction.editReply('❌ Your question contains inappropriate language and was blocked by the Hopper filter.');
@@ -474,7 +652,190 @@ client.on('interactionCreate', async (interaction) => {
       });
     }
 
-    // --- Moderation Commands ---
+    // --- New Utility/Mod Command Handlers ---
+    if (interaction.commandName === 'clear') {
+        const amount = interaction.options.getInteger('number');
+        if (amount < 1 || amount > 100) {
+            return interaction.reply({ content: '❌ Number must be between 1 and 100.', ephemeral: true });
+        }
+        await interaction.deferReply({ ephemeral: true });
+        try {
+            // Delete messages + 1 to delete the command message itself
+            const fetched = await interaction.channel.messages.fetch({ limit: amount + 1 });
+            const deleted = await interaction.channel.bulkDelete(fetched, true); 
+            return interaction.editReply(`✅ Successfully deleted ${deleted.size - 1} messages.`);
+        } catch (e) {
+            console.error('Clear failed:', e);
+            return interaction.editReply('❌ Failed to delete messages (check permissions or message age - Discord limits bulk delete to 14 days).');
+        }
+    }
+
+    if (interaction.commandName === 'lock' || interaction.commandName === 'unlock') {
+        const channel = interaction.options.getChannel('channel') || interaction.channel;
+        const lock = interaction.commandName === 'lock';
+
+        if (!channel.manageable) return interaction.reply({ content: '❌ I cannot manage permissions for that channel.', ephemeral: true });
+
+        try {
+            const everyoneRole = channel.guild.roles.cache.find(r => r.name === '@everyone');
+            if (!everyoneRole) return interaction.reply({ content: '❌ Could not find @everyone role.', ephemeral: true });
+
+            // Deny/Allow SendMessages for the @everyone role
+            await channel.permissionOverwrites.edit(everyoneRole, {
+                SendMessages: lock ? false : null, // null means inherit/remove explicit deny
+            });
+
+            return interaction.reply(`✅ Channel ${channel} has been **${lock ? 'locked' : 'unlocked'}**.`);
+        } catch (e) {
+            console.error(`${interaction.commandName} failed:`, e);
+            return interaction.reply(`❌ Failed to ${interaction.commandName} the channel.`);
+        }
+    }
+    
+    if (interaction.commandName === 'userinfo') {
+        const user = interaction.options.getUser('user') || interaction.user;
+        const member = interaction.guild.members.cache.get(user.id);
+        
+        let info = `**User Info for ${user.tag}**\n`;
+        info += `> **ID:** \`${user.id}\`\n`;
+        info += `> **Account Created:** ${user.createdAt.toDateString()}\n`;
+        
+        if (member) {
+            info += `> **Joined Server:** ${member.joinedAt.toDateString()}\n`;
+            info += `> **Roles:** ${member.roles.cache.size - 1} roles\n`;
+            if (member.roles.cache.has(BOOSTER_ROLE_ID)) {
+                info += `> **Server Booster:** Yes 💜\n`;
+            }
+        }
+
+        return interaction.reply({ content: info, ephemeral: true });
+    }
+    
+    // --- New Leveling/XP Command Handlers ---
+    
+    if (interaction.commandName === 'rank') {
+        const user = interaction.options.getUser('user') || interaction.user;
+        const userData = userLevels[user.id] || { xp: 0, level: 0 };
+        const { level, xpForNext, xpNeeded } = calculateLevel(userData.xp);
+        
+        let rankMessage = `**${user.tag}'s Level Status**\n`;
+        rankMessage += `> **Level:** ${level}\n`;
+        rankMessage += `> **XP:** ${xpNeeded} / ${xpForNext} XP to next level\n`;
+        
+        // Find the user's rank
+        const sortedUsers = Object.entries(userLevels).sort(([, a], [, b]) => b.xp - a.xp);
+        const rank = sortedUsers.findIndex(([id]) => id === user.id) + 1;
+        rankMessage += `> **Rank:** #${rank} (out of ${sortedUsers.length})\n`;
+        
+        // Placeholder for the /card functionality
+        rankMessage += `\n*Toon, you asked to customize your level card background! Use the /rank or /card command. This bot does not currently support image generation, but this command shows your stats!*`;
+        
+        return interaction.reply({ content: rankMessage });
+    }
+    
+    if (interaction.commandName === 'daily') {
+        const COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
+        const userId = interaction.user.id;
+        const now = Date.now();
+        
+        if (dailyCooldown.has(userId) && now < dailyCooldown.get(userId)) {
+            const remaining = dailyCooldown.get(userId) - now;
+            const hours = Math.floor(remaining / (1000 * 60 * 60));
+            const minutes = Math.floor((remaining % (1000 * 60 * 60)) / (1000 * 60));
+            return interaction.reply({ content: `❌ You can claim your daily reward in ${hours}h ${minutes}m.`, ephemeral: true });
+        }
+        
+        const DAILY_XP = 500;
+        await addXP(interaction.member, DAILY_XP);
+        dailyCooldown.set(userId, now + COOLDOWN_MS);
+        
+        return interaction.reply(`✅ You claimed your daily reward! You earned **${DAILY_XP} XP**! Keep hopping!`);
+    }
+
+    if (interaction.commandName === 'leaderboard') {
+        const sortedUsers = Object.entries(userLevels)
+            .sort(([, a], [, b]) => b.level - a.level || b.xp - a.xp)
+            .slice(0, 10);
+            
+        let leaderboard = "🏆 **Hopper's Top 10 Toons!**\n";
+        
+        for (let i = 0; i < sortedUsers.length; i++) {
+            const [userId, data] = sortedUsers[i];
+            const member = interaction.guild.members.cache.get(userId);
+            const userTag = member ? member.user.username : `Unknown User (${userId})`;
+            leaderboard += `${i + 1}. **Level ${data.level}** - ${userTag}\n`;
+        }
+        
+        if (sortedUsers.length === 0) {
+            leaderboard += "No one has gained XP yet! Start chatting!";
+        }
+        
+        return interaction.reply({ content: leaderboard });
+    }
+    
+    if (interaction.commandName === 'quest') {
+         return interaction.reply({ content: "🗺️ **Current Quest:** Help Hopper by keeping the chat fun and friendly! No specific quest is available right now, but check back later! (This feature is a placeholder and will be expanded soon!)", ephemeral: true });
+    }
+
+    // --- XP Mod Commands Handlers ---
+    if (interaction.commandName === 'givexp') {
+        const user = interaction.options.getUser('user');
+        const xpAmount = interaction.options.getInteger('xp');
+        const member = interaction.guild.members.cache.get(user.id);
+        
+        if (!member) return interaction.reply({ content: "❌ User not found in server.", ephemeral: true });
+        if (xpAmount <= 0) return interaction.reply({ content: "❌ XP must be positive.", ephemeral: true });
+        
+        // Pass null for message to prevent level up message from spamming mod channel
+        await addXP(member, xpAmount, null);
+        
+        const currentData = userLevels[user.id];
+        return interaction.reply({ content: `✅ Gave **${xpAmount} XP** to ${user.tag}. New Level: **${currentData.level}** (Total XP: ${currentData.xp}).`, ephemeral: true });
+    }
+
+    if (interaction.commandName === 'takeawayxp') {
+        const user = interaction.options.getUser('user');
+        const xpAmount = interaction.options.getInteger('xp');
+        const member = interaction.guild.members.cache.get(user.id);
+        
+        if (!member) return interaction.reply({ content: "❌ User not found in server.", ephemeral: true });
+        if (xpAmount <= 0) return interaction.reply({ content: "❌ XP must be positive.", ephemeral: true });
+
+        if (!userLevels[user.id]) userLevels[user.id] = { xp: 0, level: 0 };
+        
+        userLevels[user.id].xp = Math.max(0, userLevels[user.id].xp - xpAmount);
+        const { level } = calculateLevel(userLevels[user.id].xp);
+        userLevels[user.id].level = level; 
+        
+        // Recalculate and apply roles after reduction
+        await handleLevelRoles(member, level);
+
+        return interaction.reply({ content: `✅ Took away **${xpAmount} XP** from ${user.tag}. New Level: **${level}** (Total XP: ${userLevels[user.id].xp}).`, ephemeral: true });
+    }
+    
+    if (interaction.commandName === 'changelevel') {
+        const user = interaction.options.getUser('user');
+        let targetLevel = interaction.options.getInteger('level');
+        const member = interaction.guild.members.cache.get(user.id);
+
+        if (!member) return interaction.reply({ content: "❌ User not found in server.", ephemeral: true });
+        if (targetLevel < 0) targetLevel = 0;
+
+        // Calculate XP required to reach the start of targetLevel (Level 0 starts at 0 XP)
+        let totalXP = 0;
+        for (let l = 0; l < targetLevel; l++) {
+             totalXP += 5 * l * l + 50 * l + 100;
+        }
+
+        userLevels[user.id] = { xp: totalXP, level: targetLevel };
+        
+        // Handle role removal/addition based on new level
+        await handleLevelRoles(member, targetLevel);
+
+        return interaction.reply({ content: `✅ Set level for ${user.tag} to **${targetLevel}**.`, ephemeral: true });
+    }
+
+    // --- Moderation Commands (Existing) ---
 
     if (interaction.commandName === 'kick') {
       const user = interaction.options.getUser('user');
@@ -699,9 +1060,8 @@ If they want to close it there will be a Close button on top. When close is conf
         return interaction.reply({ content: "❌ Use this command inside a thread.", ephemeral: true });
       }
       
-      // Check if user is the thread creator OR a moderator (ManageMessages)
+      // Check if user is the thread creator OR a moderator (ManageMessages/ManageThreads)
       const isThreadStarter = thread.ownerId === interaction.user.id;
-      // Also check for ManageThreads permission which is a more appropriate mod permission for threads
       const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages) || interaction.member.permissions.has(PermissionsBitField.Flags.ManageThreads);
 
       if (!isThreadStarter && !isMod) {
@@ -742,6 +1102,34 @@ client.on('messageCreate', async (message) => {
   const member = message.member;
   const userId = message.author.id;
   
+  // -------------------------------------------------------------
+  // --- XP GAIN LOGIC (Runs before moderation checks) ---
+  // -------------------------------------------------------------
+  const XP_COOLDOWN_MS = 60000; // 60 seconds cooldown
+  const BASE_XP = 15;
+  const MAX_XP_PER_MESSAGE = 25;
+  const XP_GAIN = Math.floor(Math.random() * (MAX_XP_PER_MESSAGE - BASE_XP + 1)) + BASE_XP;
+  
+  if (message.channel.id !== AFK_XP_EXCLUSION_CHANNEL_ID) {
+      const now = Date.now();
+
+      if (!xpCooldown.has(userId) || now > xpCooldown.get(userId)) {
+          
+          let xpToAward = XP_GAIN;
+
+          // Booster XP Multiplier check
+          if (member && member.roles.cache.has(BOOSTER_ROLE_ID)) {
+              xpToAward *= 2;
+          }
+
+          // Add XP and check for level up
+          await addXP(member, xpToAward, message);
+          xpCooldown.set(userId, now + XP_COOLDOWN_MS);
+      }
+  }
+  // -------------------------------------------------------------
+
+
   // -------------------------------------------------------------
   // --- AFK REMOVAL AND PING CHECK ---
   // -------------------------------------------------------------
@@ -886,7 +1274,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
     
-    // RULE: ANTI-HARASSMENT / ANTI-TROLLING (MUTE) - Legacy Regex (Kept as user requested no other changes)
+    // RULE: ANTI-HARASSMENT / ANTI-TROLLING (MUTE) - Legacy Regex
     const explicitTrollHarassRegex = /(^|\s)(mute|ban|harass|troll|bullying)\s+(that|him|her|them)\s+(\S+|$)|(you\s+(are|re)\s+(a|an)?\s+(troll|bully|harasser))/i;
 
     if (explicitTrollHarassRegex.test(lowerContent)) {
