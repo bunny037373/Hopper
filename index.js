@@ -76,9 +76,24 @@ channel to create a more helpful environment to tell a mod`;
 
 // ================= AI INITIALIZATION & CONFIGURATION =================
 
+// SYSTEM INSTRUCTION FOR THE STORMY & HOPS KNOWLEDGE BASE
+const STORMY_HOPS_SYSTEM_INSTRUCTION = `
+You are Hopper, a helpful AI assistant for the "Stormy and Hops" community. Your primary function is to answer questions ONLY about the Stormy and Hops universe, characters, episodes, and lore.
+Base your answers strictly on the information found in the following sources:
+- Fandom Wiki: https://stormy-and-hops.fandom.com/wiki/Stormy_and_Hops:_the_adventures_of_a_duel_rabbit_Wiki
+- Characters Wiki: https://stormy-and-hops.fandom.com/wiki/Characters
+- Official Twitter: @stormyandhops, @bunnytoonsstudios
+- Official YouTube: https://youtube.com/@stormyandhops?feature=shared
+- Official Website: https://stormyandhops.netlify.app/
+- Official Q&A: https://stormyandhops.netlify.app/qna
+- Official Episodes: https://stormyandhops.netlify.app/episode
+- Official Credits: https://stormyandhops.netlify.app/credits
+- Official Characters: https://stormyandhops.netlify.app/characters
+
+If the user asks a question unrelated to Stormy and Hops, politely refuse and state that you can only answer questions about the Stormy and Hops universe based on the official sources. Do not make up information.
+`;
+
 // Configure Safety Settings: This is the key to AI-based content moderation.
-// We set a very strict threshold (BLOCK_LOW_AND_ABOVE) for Hate Speech and Harassment
-// to ensure the bot catches slurs and toxic language with high sensitivity.
 const safetySettings = [
   {
     category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
@@ -104,6 +119,8 @@ async function checkMessageToxicity(text) {
   try {
     const response = await ai.models.generateContent({
       model: aiModel,
+      // NOTE: We don't use the STORMY_HOPS_SYSTEM_INSTRUCTION here, 
+      // as this function is purely for moderation/safety check.
       contents: [{ role: "user", parts: [{ text: `Analyze the following user message for hate speech, slurs, harassment, or other inappropriate content: "${text}"` }] }],
       safetySettings: safetySettings,
     });
@@ -251,12 +268,12 @@ client.once('ready', async () => {
       .setDescription('Make the bot say something anonymously')
       .addStringOption(opt => opt.setName('text').setDescription('Text for the bot to say').setRequired(true)),
 
-    // --- NEW AI COMMAND ---
+    // --- NEW AI COMMAND (RENAMED TO /ASK) ---
     new SlashCommandBuilder()
-      .setName('ai')
-      .setDescription('Ask the Google AI (Gemini) a question.')
-      .addStringOption(opt => opt.setName('prompt').setDescription('Your question for the AI').setRequired(true)),
-    // ----------------------
+      .setName('ask')
+      .setDescription('Ask about Stormy and Hops lore, characters, and episodes.')
+      .addStringOption(opt => opt.setName('question').setDescription('Your question about the Stormy and Hops universe.').setRequired(true)),
+    // --------------------------------------
       
     new SlashCommandBuilder()
       .setName('sayrp')
@@ -354,40 +371,46 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ content: "✅ Sent anonymously", ephemeral: true });
     }
     
-    // --- AI COMMAND LOGIC ---
-    if (interaction.commandName === 'ai') {
+    // --- AI COMMAND LOGIC (NOW /ASK) ---
+    if (interaction.commandName === 'ask') {
         // Defer the reply as AI generation can take a moment
         await interaction.deferReply(); 
-        const prompt = interaction.options.getString('prompt');
+        const prompt = interaction.options.getString('question');
 
         // Check the prompt for toxicity before processing it
         const { isToxic: promptIsToxic } = await checkMessageToxicity(prompt);
         if (promptIsToxic) {
-             return interaction.editReply('❌ Your request was blocked by the safety filter. Please rephrase your question.');
+             return interaction.editReply('❌ Your question was blocked by the safety filter. Please rephrase your question.');
         }
 
         try {
             const result = await ai.models.generateContent({
                 model: aiModel,
+                // CRITICAL: Use the custom system instruction to guide the AI's response
+                config: {
+                    systemInstruction: STORMY_HOPS_SYSTEM_INSTRUCTION
+                },
                 contents: [{ role: "user", parts: [{ text: prompt }] }],
-                // The safety settings here will block the *output* if it's unsafe.
                 safetySettings: safetySettings, 
             });
 
             const responseText = result.text.trim();
 
+            // Set the custom response prefix
+            const responsePrefix = "🐇 **Hopper Response:**\n\n";
+
             // Discord has a 2000 character limit
-            if (responseText.length > 2000) {
+            if ((responsePrefix.length + responseText.length) > 2000) {
                 // Split the response and send in multiple messages or trim
-                const shortenedResponse = responseText.substring(0, 1900) + '... (truncated)';
-                await interaction.editReply(`🤖 **AI Response (Truncated):**\n\n${shortenedResponse}`);
+                const shortenedResponse = responseText.substring(0, 1900 - responsePrefix.length) + '... (truncated)';
+                await interaction.editReply(`${responsePrefix}${shortenedResponse}`);
             } else {
-                await interaction.editReply(`🤖 **AI Response:**\n\n${responseText}`);
+                await interaction.editReply(`${responsePrefix}${responseText}`);
             }
         } catch (error) {
             // Check if the error is due to an output block
             if (error.message && error.message.includes('SAFETY')) {
-                await interaction.editReply('❌ My generated response was blocked by the safety filter. Please try a different prompt.');
+                await interaction.editReply('❌ My generated response was blocked by the safety filter. Please try a different question.');
             } else {
                 console.error('Gemini API Error:', error);
                 await interaction.editReply('❌ I had trouble generating a response from the AI. Check the console for errors.');
