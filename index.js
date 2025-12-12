@@ -30,18 +30,6 @@ if (!process.env.GEMINI_API_KEY) {
 }
 // --------------------
 
-// ====================== CRITICAL MISSING PIECE ADDED ======================
-// Initialize Discord Bot Client with necessary permissions (Intents)
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,           // Required for guild-related events
-    GatewayIntentBits.GuildMessages,    // Required for message-related events
-    GatewayIntentBits.MessageContent,   // CRITICAL: Required to read message content
-    GatewayIntentBits.GuildMembers,     // Required for join/leave tracking, member fetching, and nickname moderation
-  ],
-});
-// =========================================================================
-
 // ====================== CRITICAL CONFIGURATION: REPLACE THESE ======================
 
 // ** CRITICAL: REPLACE THIS WITH THE DIRECT LINK TO STORMY'S RP IMAGE **
@@ -74,26 +62,33 @@ and for more assistance please use
 https://discord.com/channels/${GUILD_ID}/1414352972304879626
 channel to create a more helpful environment to tell a mod`;
 
+// --- ADDED CONSTANTS FOR AI ---
+// Note: Midnight PT (Gemini API reset time) is 3:00 AM EST.
+const RESET_TIME = '3:00 AM EST';
+
+// Fandom links added as context for the AI model to use when answering questions.
+const FANDOM_LINKS = `
+Use the following external links as knowledge resources if the user asks about these characters:
+- https://stormy-and-hops.fandom.com/wiki/Stormy_Bunny
+- https://stormy-and-hops.fandom.com/wiki/Hops_Bunny
+- https://stormy-and-hops.fandom.com/wiki/Scarlet_bunny
+- https://stormy-and-hops.fandom.com/wiki/Oscar_the_crazy_scientist
+- https://stormy-and-hops.fandom.com/wiki/Preston_(The_Big_Dumb_Rock)
+- https://stormy-and-hops.fandom.com/wiki/Mr._Luck
+- https://stormy-and-hops.fandom.com/wiki/Mrs._diamond
+- https://stormy-and-hops.fandom.com/wiki/Scout_Bunny
+- https://stormy-and-hops.fandom.com/wiki/Katie_The_Deer
+- https://stormy-and-hops.fandom.com/wiki/Paul_The_Hyper_Cat
+- https://stormy-and-hops.fandom.com/wiki/Cloudy_Kitty
+- https://stormy-and-hops.fandom.com/wiki/Jin_the_panda
+`;
+// ------------------------------
+
 // ================= AI INITIALIZATION & CONFIGURATION =================
 
-// SYSTEM INSTRUCTION FOR THE STORMY & HOPS KNOWLEDGE BASE
-const STORMY_HOPS_SYSTEM_INSTRUCTION = `
-You are Hopper, a helpful AI assistant for the "Stormy and Hops" community. Your primary function is to answer questions ONLY about the Stormy and Hops universe, characters, episodes, and lore.
-Base your answers strictly on the information found in the following sources:
-- Fandom Wiki: https://stormy-and-hops.fandom.com/wiki/Stormy_and_Hops:_the_adventures_of_a_duel_rabbit_Wiki
-- Characters Wiki: https://stormy-and-hops.fandom.com/wiki/Characters
-- Official Twitter: @stormyandhops, @bunnytoonsstudios
-- Official YouTube: https://youtube.com/@stormyandhops?feature=shared
-- Official Website: https://stormyandhops.netlify.app/
-- Official Q&A: https://stormyandhops.netlify.app/qna
-- Official Episodes: https://stormyandhops.netlify.app/episode
-- Official Credits: https://stormyandhops.netlify.app/credits
-- Official Characters: https://stormyandhops.netlify.app/characters
-
-If the user asks a question unrelated to Stormy and Hops, politely refuse and state that you can only answer questions about the Stormy and Hops universe based on the official sources. Do not make up information.
-`;
-
 // Configure Safety Settings: This is the key to AI-based content moderation.
+// We set a very strict threshold (BLOCK_LOW_AND_ABOVE) for Hate Speech and Harassment
+// to ensure the bot catches slurs and toxic language with high sensitivity.
 const safetySettings = [
   {
     category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
@@ -119,8 +114,6 @@ async function checkMessageToxicity(text) {
   try {
     const response = await ai.models.generateContent({
       model: aiModel,
-      // NOTE: We don't use the STORMY_HOPS_SYSTEM_INSTRUCTION here, 
-      // as this function is purely for moderation/safety check.
       contents: [{ role: "user", parts: [{ text: `Analyze the following user message for hate speech, slurs, harassment, or other inappropriate content: "${text}"` }] }],
       safetySettings: safetySettings,
     });
@@ -268,12 +261,12 @@ client.once('ready', async () => {
       .setDescription('Make the bot say something anonymously')
       .addStringOption(opt => opt.setName('text').setDescription('Text for the bot to say').setRequired(true)),
 
-    // --- NEW AI COMMAND (RENAMED TO /ASK) ---
+    // --- NEW AI COMMAND ---
     new SlashCommandBuilder()
-      .setName('ask')
-      .setDescription('Ask about Stormy and Hops lore, characters, and episodes.')
-      .addStringOption(opt => opt.setName('question').setDescription('Your question about the Stormy and Hops universe.').setRequired(true)),
-    // --------------------------------------
+      .setName('ai')
+      .setDescription('Ask the Google AI (Gemini) a question.')
+      .addStringOption(opt => opt.setName('prompt').setDescription('Your question for the AI').setRequired(true)),
+    // ----------------------
       
     new SlashCommandBuilder()
       .setName('sayrp')
@@ -371,49 +364,49 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ content: "✅ Sent anonymously", ephemeral: true });
     }
     
-    // --- AI COMMAND LOGIC (NOW /ASK) ---
-    if (interaction.commandName === 'ask') {
+    // --- AI COMMAND LOGIC ---
+    if (interaction.commandName === 'ai') {
         // Defer the reply as AI generation can take a moment
         await interaction.deferReply(); 
-        const prompt = interaction.options.getString('question');
+        const prompt = interaction.options.getString('prompt');
 
         // Check the prompt for toxicity before processing it
         const { isToxic: promptIsToxic } = await checkMessageToxicity(prompt);
         if (promptIsToxic) {
-             return interaction.editReply('❌ Your question was blocked by the safety filter. Please rephrase your question.');
+             return interaction.editReply('❌ Your request was blocked by the safety filter. Please rephrase your question.');
         }
 
         try {
             const result = await ai.models.generateContent({
                 model: aiModel,
-                // CRITICAL: Use the custom system instruction to guide the AI's response
-                config: {
-                    systemInstruction: STORMY_HOPS_SYSTEM_INSTRUCTION
-                },
                 contents: [{ role: "user", parts: [{ text: prompt }] }],
-                safetySettings: safetySettings, 
+                // The safety settings here will block the *output* if it's unsafe.
+                safetySettings: safetySettings,
+                // ADDED: Configuration to include the fandom links in the system instruction
+                config: {
+                    systemInstruction: `You are a helpful assistant. ${FANDOM_LINKS}`,
+                },
             });
 
             const responseText = result.text.trim();
 
-            // Set the custom response prefix
-            const responsePrefix = "🐇 **Hopper Response:**\n\n";
-
             // Discord has a 2000 character limit
-            if ((responsePrefix.length + responseText.length) > 2000) {
+            if (responseText.length > 2000) {
                 // Split the response and send in multiple messages or trim
-                const shortenedResponse = responseText.substring(0, 1900 - responsePrefix.length) + '... (truncated)';
-                await interaction.editReply(`${responsePrefix}${shortenedResponse}`);
+                const shortenedResponse = responseText.substring(0, 1900) + '... (truncated)';
+                await interaction.editReply(`🤖 **AI Response (Truncated):**\n\n${shortenedResponse}`);
             } else {
-                await interaction.editReply(`${responsePrefix}${responseText}`);
+                await interaction.editReply(`🤖 **AI Response:**\n\n${responseText}`);
             }
         } catch (error) {
             // Check if the error is due to an output block
             if (error.message && error.message.includes('SAFETY')) {
-                await interaction.editReply('❌ My generated response was blocked by the safety filter. Please try a different question.');
+                await interaction.editReply('❌ My generated response was blocked by the safety filter. Please try a different prompt.');
             } else {
                 console.error('Gemini API Error:', error);
-                await interaction.editReply('❌ I had trouble generating a response from the AI. Check the console for errors.');
+                // REPLACED: Custom error message for API failure/quota exhaustion
+                const customErrorMessage = `:scaredcloudy: I had trouble connecting to information please wait until ${RESET_TIME} until I fully reset and you can get more information :heartkatie:`;
+                await interaction.editReply(customErrorMessage);
             }
         }
         return;
@@ -1005,3 +998,5 @@ http.createServer((req, res) => {
   res.writeHead(200);
   res.end("Bot is running!");
 }).listen(PORT, () => console.log(`🌐 Server running on ${PORT}`));
+
+}
