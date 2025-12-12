@@ -10,7 +10,7 @@ const {
   SlashCommandBuilder,
   PermissionsBitField,
   ThreadChannel,
-  // AttachmentBuilder // Removed: Not needed after canvacord removal
+  AttachmentBuilder // Needed for sending images
 } = require('discord.js');
 const http = require('http');
 
@@ -19,9 +19,9 @@ const { GoogleGenAI, HarmCategory, HarmBlockThreshold } = require('@google/genai
 
 // --- Image Generation Import (FIXED) ---
 // The RankCardBuilder, LeaderboardBuilder, and Font objects must be imported directly.
-// const { RankCardBuilder, LeaderboardBuilder, Font } = require('canvacord'); // Removed canvacord imports
+const { RankCardBuilder, LeaderboardBuilder, Font } = require('canvacord');
 // Load the default font for image generation
-// Font.loadDefault(); // Removed canvacord setup
+Font.loadDefault(); // This line now works and fixes the TypeError
 // ---------------------------------------
 
 // Check for the mandatory token environment variable
@@ -662,35 +662,51 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (interaction.commandName === 'leaderboard') {
+        await interaction.deferReply();
         const sortedUsers = Object.entries(userLevels)
             .sort(([, a], [, b]) => b.level - a.level || b.xp - a.xp)
             .slice(0, 10);
 
         if (sortedUsers.length === 0) {
-            return interaction.reply("No one has gained XP yet! Start chatting!");
+            return interaction.editReply("No one has gained XP yet! Start chatting!");
         }
 
-        let leaderboardText = "📜 **Toon Springs Top 10 Leaderboard**\n\n";
+        try {
+            // Transform data for Canvacord
+            const players = sortedUsers.map(([userId, data], index) => {
+                const member = interaction.guild.members.cache.get(userId);
+                const user = member ? member.user : { username: 'Unknown', displayAvatarURL: () => 'https://cdn.discordapp.com/embed/avatars/0.png' };
+                return { 
+                    avatar: user.displayAvatarURL({ extension: 'png' }), 
+                    username: user.username, 
+                    displayName: member ? member.displayName : user.username, 
+                    level: data.level, 
+                    xp: data.xp, 
+                    rank: index + 1 
+                };
+            });
+            
+            const lb = new LeaderboardBuilder()
+                .setHeader({ title: 'Toon Springs Top 10', image: STORMY_AVATAR_URL, subtitle: `${Object.keys(userLevels).length} members` })
+                .setPlayers(players)
+                .setBackground(RANK_CARD_BACKGROUND_URL); 
 
-        for (let i = 0; i < sortedUsers.length; i++) {
-            const [userId, data] = sortedUsers[i];
-            const member = interaction.guild.members.cache.get(userId);
-            const username = member ? member.user.username : `Unknown User (${userId})`;
-            
-            const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '🔹';
-            
-            leaderboardText += `${medal} **Rank ${i + 1}**: ${username} - Level **${data.level}** (${data.xp} XP)\n`;
+            const data = await lb.build({ format: 'png' });
+            const attachment = new AttachmentBuilder(data, { name: 'leaderboard.png' });
+            return interaction.editReply({ files: [attachment] });
+        } catch (e) {
+            console.error("Failed to generate leaderboard:", e);
+            return interaction.editReply("❌ Failed to generate the leaderboard image. Check bot permissions or image URLs.");
         }
-        
-        return interaction.reply({ content: leaderboardText });
     }
     
     if (interaction.commandName === 'rank') {
+        await interaction.deferReply();
         const user = interaction.options.getUser('user') || interaction.user;
         const member = interaction.guild.members.cache.get(user.id);
 
         if (!member) {
-            return interaction.reply({ content: "❌ User not found in this server.", ephemeral: true });
+            return interaction.editReply("❌ User not found in this server.");
         }
 
         const userData = userLevels[user.id] || { xp: 0, level: 0 };
@@ -700,17 +716,29 @@ client.on('interactionCreate', async (interaction) => {
         const sortedUsers = Object.entries(userLevels)
             .sort(([, a], [, b]) => b.level - a.level || b.xp - a.xp);
         const rank = sortedUsers.findIndex(([id]) => id === user.id) + 1;
-        const totalUsers = Object.keys(userLevels).length;
         // -----------------------------
-        
-        let rankText = `🐰 **${member.displayName}'s Rank Card** 🐰\n\n`;
-        rankText += `**Rank:** #${rank} of ${totalUsers}\n`;
-        rankText += `**Level:** ${level}\n`;
-        rankText += `**Current XP:** ${xpNeeded}\n`;
-        rankText += `**XP to Next Level:** ${xpForNext - xpNeeded} XP required for Level ${level + 1}\n`;
-        rankText += `**Total XP:** ${userData.xp}`;
 
-        return interaction.reply({ content: rankText });
+        // Create the rank card
+        const rankCard = new RankCardBuilder()
+            .setAvatar(user.displayAvatarURL({ extension: 'png' }))
+            .setRank(rank)
+            .setLevel(level)
+            .setCurrentXP(xpNeeded)
+            .setRequiredXP(xpForNext)
+            .setProgressBar('#7744AA') // Purple color for the progress bar
+            .setUsername(user.username)
+            .setDisplayName(member.displayName)
+            .setBackground(RANK_CARD_BACKGROUND_URL); 
+
+        try {
+            const data = await rankCard.build({ format: 'png' });
+            const attachment = new AttachmentBuilder(data, { name: 'rank.png' });
+            await interaction.editReply({ files: [attachment] });
+        } catch (e) {
+            console.error("Failed to generate rank card:", e);
+            await interaction.editReply("❌ I failed to generate the rank card. Check bot permissions or configuration.");
+        }
+        return;
     }
 
 
@@ -1029,6 +1057,19 @@ client.on('messageCreate', async (message) => {
     // Check if message is a pure GIF/image link (to allow them without filtering)
     const isPureGIFLink = lowerContent.match(/(http(s)?:\/\/(?:i\.)?imgur\.com\/\S+|http(s)?:\/\/gfycat\.com\/\S+|http(s)?:\/\/\S+\.(png|jpe?g|gif))/i) && message.content.split(/\s/).length === 1;
 
+    // --- NEW FANART CHANNEL RULE (Rule 0) ---
+    // Rule: If in TARGET_CHANNEL_ID, message must have an attachment if it has any text.
+    if (message.channel.id === TARGET_CHANNEL_ID) {
+        // Condition: Text is present (non-whitespace) AND no attachment is present
+        if (message.content.trim().length > 0 && message.attachments.size === 0) {
+             await message.delete().catch(() => {});
+             const log = client.channels.cache.get(LOG_CHANNEL_ID);
+             if (log) log.send(`🖼️ **Fanart Channel Rule Violation (Deleted)**\nUser: <@${message.author.id}>\nChannel: <#${TARGET_CHANNEL_ID}>\nReason: Text-only message without attachment.\nContent: ||${message.content}||`);
+             return; // Stop processing the message
+        }
+    }
+    // --- END NEW FANART CHANNEL RULE ---
+
     // --- MANUAL WORD FILTER CHECK (FIRST LAYER DEFENSE) ---
     const manualFilter = filterMessageManually(content);
     
@@ -1247,4 +1288,5 @@ http.createServer((req, res) => {
     res.end('Hopper Bot is Running!\n');
 }).listen(PORT, () => {
     console.log(`Web server listening on port ${PORT}`);
-});
+
+}
