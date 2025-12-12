@@ -2,15 +2,14 @@
   "name": "hopper-discord-bot",
   "version": "1.0.0",
   "description": "A feature-rich Discord bot with moderation, filters, and custom systems.",
-  "main": "index.js",
+  "main": "index 2.js",
   "scripts": {
-    "start": "node index.js" 
+    "start": "node \"index 2.js\""
   },
   "dependencies": {
     "discord.js": "^14.14.1",
     "http": "^0.0.1-security",
-    "@google/genai": "latest",
-    "canvacord": "^5.4.8"
+    "@google/genai": "latest" 
   },
   "keywords": [
     "discord",
