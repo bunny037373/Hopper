@@ -23,7 +23,7 @@ if (!process.env.TOKEN) {
   process.exit(1);
 }
 
-// --- AI Key Check ---
+// --- AI Key Check ---\
 if (!process.env.GEMINI_API_KEY) {
   console.error("❌ GEMINI_API_KEY not found. Add GEMINI_API_KEY in Render Environment Variables to enable AI.");
   process.exit(1);
@@ -35,10 +35,10 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent, // Required to read message content for moderation/AFK
+    GatewayIntentBits.MessageContent, // Required to read message content for moderation/AFK prefix command
     GatewayIntentBits.GuildMembers,   // Required for member-based features (kicks, bans, nickname check, join/leave)
-    GatewayIntentBits.GuildMessageReactions, // Required for reacting/thread handling
-    GatewayIntentBits.MessageCreate
+    GatewayIntentBits.GuildMessageReactions // Required for reacting/thread handling
+    // FIX: Removed the invalid intent 'GatewayIntentBits.MessageCreate'
   ]
 });
 // =========================================================================================
@@ -77,8 +77,6 @@ https://discord.com/channels/${GUILD_ID}/1414352972304879626
 channel to create a more helpful environment to tell a mod`;
 
 // ================= AI INITIALIZATION & CONFIGURATION =================
-
-// Configure Safety Settings: This is the key to AI-based content moderation.
 const safetySettings = [
   {
     category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
@@ -173,7 +171,6 @@ async function runAutomatedNicknameScan(guild) {
     let moderatedCount = 0;
     
     try {
-        // Ensure members are cached for the scan
         const members = await guild.members.fetch(); 
         
         for (const [id, member] of members) {
@@ -238,7 +235,7 @@ client.once('ready', async () => {
   }
 
 
-  // Register slash commands (NOTE: /afk is now a prefix command and removed from here)
+  // Register slash commands
   const commands = [
     new SlashCommandBuilder()
       .setName('say')
@@ -327,16 +324,12 @@ client.on('guildCreate', async (guild) => {
 // ================= SLASH COMMANDS AND BUTTONS =================
 client.on('interactionCreate', async (interaction) => {
   if (interaction.isChatInputCommand()) {
-    // Check if the user is a moderator based on permissions
     const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ModerateMembers) || interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages);
 
-    // --- MOD ONLY COMMANDS CHECK ---
     if (['kick','ban','unban','timeout','setup'].includes(interaction.commandName) && !isMod) {
       return interaction.reply({ content: '❌ Mods only', ephemeral: true });
     }
     
-    // --- COMMAND LOGIC ---
-
     if (interaction.commandName === 'say') {
       const text = interaction.options.getString('text');
       const { isToxic } = await checkMessageToxicity(text);
@@ -346,7 +339,6 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ content: "✅ Sent anonymously", ephemeral: true });
     }
     
-    // --- AI COMMAND LOGIC ---
     if (interaction.commandName === 'ai') {
         await interaction.deferReply(); 
         const prompt = interaction.options.getString('prompt');
@@ -381,7 +373,6 @@ client.on('interactionCreate', async (interaction) => {
         }
         return;
     }
-    // -----------------------------
 
     if (interaction.commandName === 'sayrp') {
       const character = interaction.options.getString('character');
@@ -663,14 +654,15 @@ If they want to close it there will be a Close button on top. When close is conf
     // ================== THREAD BUTTONS LOGIC ==================
     if (interaction.customId === 'archive_thread' || interaction.customId === 'edit_title') {
       const thread = interaction.channel;
-      // CRITICAL: Checks if the interaction is happening in a thread
+      
       if (!(thread instanceof ThreadChannel)) { 
         return interaction.reply({ content: "❌ Use this command inside a thread.", ephemeral: true });
       }
       
       // Check if user is the thread creator OR a moderator (ManageMessages)
       const isThreadStarter = thread.ownerId === interaction.user.id;
-      const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages);
+      // Also check for ManageThreads permission which is a more appropriate mod permission for threads
+      const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages) || interaction.member.permissions.has(PermissionsBitField.Flags.ManageThreads);
 
       if (!isThreadStarter && !isMod) {
           return interaction.reply({ content: "❌ Only the thread creator or a moderator can use these controls.", ephemeral: true });
@@ -683,12 +675,11 @@ If they want to close it there will be a Close button on top. When close is conf
 
       if (interaction.customId === 'edit_title') {
         await interaction.reply({ content: "Send the new title in the thread. You have 30 seconds.", ephemeral: true });
-        // Create a message collector for the next message from the user
+        
         const filter = m => m.author.id === interaction.user.id && m.channelId === thread.id;
         const collector = thread.createMessageCollector({ filter, time: 30000, max: 1 });
         collector.on('collect', async (msg) => {
           try {
-              // Set thread name, limited to 100 characters
               await thread.setName(msg.content.slice(0, 100)); 
               await msg.delete();
               await interaction.followUp({ content: "✅ Title updated", ephemeral: true });
@@ -724,7 +715,6 @@ client.on('messageCreate', async (message) => {
       try {
         const sentMessage = await message.channel.send(returnMessage);
         
-        // Delete the return message after 5 seconds (5000ms)
         setTimeout(() => {
             sentMessage.delete().catch(e => console.log('Failed to delete AFK return message:', e));
         }, 5000);
@@ -746,33 +736,28 @@ client.on('messageCreate', async (message) => {
           }
       });
   }
-  // -------------------------------------------------------------
   
   // -------------------------------------------------------------
-  // --- NEW AFK PREFIX COMMAND CHECK: ?afk [reason] ---
+  // --- AFK PREFIX COMMAND CHECK: ?afk [reason] (The ONLY prefix command) ---
   // -------------------------------------------------------------
   if (lowerContent.startsWith('?afk')) {
       const reason = content.slice(4).trim() || 'I am currently away.';
       
-      // Filter check on the reason
       const { isToxic } = await checkMessageToxicity(reason);
       if (isToxic) {
           await message.delete().catch(() => {});
           return message.channel.send(`❌ <@${userId}>: Your AFK reason was blocked by the safety filter.`);
       }
 
-      // Store AFK status
       afkStatus.set(userId, { reason: reason, time: Date.now() });
 
       try {
-          // Send a confirmation message
           await message.channel.send(`✅ <@${userId}> is now AFK. Message: **${reason}**`);
-          // Delete the original command message
           await message.delete().catch(() => {}); 
       } catch (e) {
           console.error("Failed to execute/delete ?afk command:", e);
       }
-      return; // Stop further processing as the message was a command
+      return; 
   }
   // -------------------------------------------------------------
 
@@ -821,7 +806,6 @@ client.on('messageCreate', async (message) => {
       
       try {
         if (member && member.manageable) {
-            // Timeout for 30 minutes
             await member.timeout(30 * 60 * 1000, `AI Detected Severe Violation: ${blockCategory}`).catch(() => {}); 
         }
         
@@ -832,10 +816,8 @@ client.on('messageCreate', async (message) => {
       }
       return;
     }
-    // --- END AI MODERATION ACTION ---
-
-
-    // RULE: ANTI-HARASSMENT / ANTI-TROLLING (MUTE) - KEPT FOR EXPLICIT COMMANDS
+    
+    // RULE: ANTI-HARASSMENT / ANTI-TROLLING (MUTE)
     const explicitTrollHarassRegex = /(^|\s)(mute|ban|harass|troll|bullying)\s+(that|him|her|them)\s+(\S+|$)|(you\s+(are|re)\s+(a|an)?\s+(troll|bully|harasser))/i;
 
     if (explicitTrollHarassRegex.test(lowerContent)) {
@@ -843,7 +825,6 @@ client.on('messageCreate', async (message) => {
 
         if (member && member.manageable) {
             try {
-                // Timeout for 60 minutes
                 await member.timeout(60 * 60 * 1000, "Trolling/Harassment detected"); 
                 
                 const log = client.channels.cache.get(LOG_CHANNEL_ID);
