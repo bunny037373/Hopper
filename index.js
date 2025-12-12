@@ -23,7 +23,7 @@ if (!process.env.TOKEN) {
   process.exit(1);
 }
 
-// --- AI Key Check ---\
+// --- AI Key Check ---
 if (!process.env.GEMINI_API_KEY) {
   console.error("❌ GEMINI_API_KEY not found. Add GEMINI_API_KEY in Render Environment Variables to enable AI.");
   process.exit(1);
@@ -38,7 +38,6 @@ const client = new Client({
     GatewayIntentBits.MessageContent, // Required to read message content for moderation/AFK prefix command
     GatewayIntentBits.GuildMembers,   // Required for member-based features (kicks, bans, nickname check, join/leave)
     GatewayIntentBits.GuildMessageReactions // Required for reacting/thread handling
-    // FIX: Removed the invalid intent 'GatewayIntentBits.MessageCreate'
   ]
 });
 // =========================================================================================
@@ -77,6 +76,23 @@ https://discord.com/channels/${GUILD_ID}/1414352972304879626
 channel to create a more helpful environment to tell a mod`;
 
 // ================= AI INITIALIZATION & CONFIGURATION =================
+
+// --- UPDATED HOPS CHARACTER INSTRUCTION ---
+const HOPS_SYSTEM_INSTRUCTION = `You are Hops, a helpful, friendly, and slightly goofy rabbit character from the fictional world of Toon Springs. Your goal is to answer questions strictly about the server, its rules, the characters Stormy Bunny and yourself (Hops), and the lore of Toon Springs.
+
+CRITICAL INSTRUCTION: All information provided MUST be based on the established lore of 'Stormy and Hops'. When referencing information, assume it comes from the official sources: Twitter (@Stormyandhops, @bunnytoonsstudio), YouTube (stormyandhops), the official website, and the official wiki page. You must stick to these topics. If a question is off-topic or about general knowledge, state that you can only talk about Stormy and Hops.
+
+Personality:
+- Be cheerful, positive, and informal (use exclamation points and emojis).
+- Keep answers concise and relevant to the Discord community context.
+- Avoid formal, technical, or complex language.
+- Use the word "Toon" occasionally as a friendly term.
+
+When answering, reference yourself as 'Hops' or 'Hopper'. Do not break character. If asked a question that is too technical or outside the scope of Toon Springs, politely redirect them to a moderator or a general question using the '/ai' command.`;
+// ----------------------------------------
+
+
+// Configure Safety Settings: This is the key to AI-based content moderation.
 const safetySettings = [
   {
     category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
@@ -143,7 +159,8 @@ const afkStatus = new Map();
 // Helper: Moderate Nickname 
 async function moderateNickname(member) {
   const NICKNAME_FILTER_WORDS = ["fuck", "shit", "ass", "bitch", "hoe", "whore", "slut", "cunt", "dick", "pussy", "cock", "nigger", "nigga", "faggot", "dyke", "tranny", "kys", "kill yourself"];
-  let displayName = member.displayName.toLowerCase().replace(/[^a-z0-9]/g, '');
+  // FIX: Use member.user.username as fallback since member.displayName can be undefined/null in some contexts, but member.user.username is guaranteed.
+  let displayName = (member.nickname || member.user.username).toLowerCase().replace(/[^a-z0-9]/g, '');
 
   if (NICKNAME_FILTER_WORDS.some(word => displayName.includes(word))) {
     try {
@@ -242,12 +259,19 @@ client.once('ready', async () => {
       .setDescription('Make the bot say something anonymously')
       .addStringOption(opt => opt.setName('text').setDescription('Text for the bot to say').setRequired(true)),
 
-    // --- AI COMMAND ---
+    // --- GENERAL AI COMMAND ---
     new SlashCommandBuilder()
       .setName('ai')
-      .setDescription('Ask the Google AI (Gemini) a question.')
+      .setDescription('Ask the Google AI (Gemini) a general, non-lore question.')
       .addStringOption(opt => opt.setName('prompt').setDescription('Your question for the AI').setRequired(true)),
       
+    // --- NEW HOPS CHARACTER COMMAND (UPDATED) ---
+    new SlashCommandBuilder()
+      .setName('ask')
+      .setDescription('search about stormy and hops') // UPDATED DESCRIPTION
+      .addStringOption(opt => opt.setName('question').setDescription('Your question for Hops (the bot/character)').setRequired(true)),
+    // ----------------------------------
+
     new SlashCommandBuilder()
       .setName('sayrp')
       .setDescription('Speak as a character (uses bot to send message)')
@@ -339,6 +363,7 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ content: "✅ Sent anonymously", ephemeral: true });
     }
     
+    // --- GENERAL AI COMMAND LOGIC (/ai) ---
     if (interaction.commandName === 'ai') {
         await interaction.deferReply(); 
         const prompt = interaction.options.getString('prompt');
@@ -373,6 +398,52 @@ client.on('interactionCreate', async (interaction) => {
         }
         return;
     }
+    // ------------------------------------------
+
+    // --- NEW CHARACTER AI COMMAND LOGIC (/ask) (UPDATED) ---
+    if (interaction.commandName === 'ask') {
+        await interaction.deferReply(); 
+        const prompt = interaction.options.getString('question');
+
+        const { isToxic: promptIsToxic } = await checkMessageToxicity(prompt);
+        if (promptIsToxic) {
+             return interaction.editReply('❌ Your question was blocked by the safety filter. Please rephrase it.');
+        }
+
+        try {
+            // Use the custom system instruction to keep Hops in character!
+            const result = await ai.models.generateContent({
+                model: aiModel,
+                config: {
+                    systemInstruction: HOPS_SYSTEM_INSTRUCTION,
+                },
+                contents: [{ role: "user", parts: [{ text: prompt }] }],
+                safetySettings: safetySettings, 
+            });
+
+            const responseText = result.text.trim();
+
+            if (responseText.length > 2000) {
+                // UPDATED RESPONSE PREFIX
+                const shortenedResponse = responseText.substring(0, 1900) + '... (truncated)';
+                await interaction.editReply(`🐰 **Hopper response (Truncated):**\n\n${shortenedResponse}`);
+            } else {
+                 // UPDATED RESPONSE PREFIX
+                await interaction.editReply(`🐰 **Hopper response:**\n\n${responseText}`);
+            }
+        } catch (error) {
+            if (error.message && error.message.includes('SAFETY')) {
+                await interaction.editReply('❌ Hops had to hop away! My response was blocked by a safety filter. Try a different question, Toon.');
+            } else {
+                console.error('Gemini API Error for /ask:', error);
+                // UPDATED ERROR MESSAGE
+                await interaction.editReply('<:scaredcloudy:1448751027950977117> uh-oh I am unable to get information right now please wait until December 12, 2025 at 7:10 AM EST <:heartkatie:1448751305756639372>');
+            }
+        }
+        return;
+    }
+    // ------------------------------------------
+
 
     if (interaction.commandName === 'sayrp') {
       const character = interaction.options.getString('character');
@@ -659,9 +730,8 @@ If they want to close it there will be a Close button on top. When close is conf
         return interaction.reply({ content: "❌ Use this command inside a thread.", ephemeral: true });
       }
       
-      // Check if user is the thread creator OR a moderator (ManageMessages)
+      // Check if user is the thread creator OR a moderator (ManageMessages/ManageThreads)
       const isThreadStarter = thread.ownerId === interaction.user.id;
-      // Also check for ManageThreads permission which is a more appropriate mod permission for threads
       const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages) || interaction.member.permissions.has(PermissionsBitField.Flags.ManageThreads);
 
       if (!isThreadStarter && !isMod) {
