@@ -225,6 +225,19 @@ function startAutomatedNicknameScan(guild) {
 
 
 // ================= READY =================
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMembers,
+    ]
+});
+
+// Cache for cooldown tracking
+const userCooldowns = new Map();
+const COOLDOWN_SECONDS = 60; 
+
 client.once('ready', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 
@@ -263,7 +276,7 @@ client.once('ready', async () => {
 
     // --- NEW AI COMMAND ---
     new SlashCommandBuilder()
-      .setName('ai')
+      .setName('ask')
       .setDescription('Ask the Google AI (Gemini) a question.')
       .addStringOption(opt => opt.setName('prompt').setDescription('Your question for the AI').setRequired(true)),
     // ----------------------
@@ -365,7 +378,26 @@ client.on('interactionCreate', async (interaction) => {
     }
     
     // --- AI COMMAND LOGIC ---
-    if (interaction.commandName === 'ai') {
+    if (interaction.commandName === 'ask') {
+        const userId = interaction.user.id;
+        const now = Date.now();
+        const lastUsed = userCooldowns.get(userId);
+        
+        // --- COOLDOWN CHECK ---
+        if (lastUsed && now < lastUsed + COOLDOWN_SECONDS * 1000) {
+            const remainingSeconds = Math.ceil((lastUsed + COOLDOWN_SECONDS * 1000 - now) / 1000);
+            
+            // --- CUSTOM COOLDOWN MESSAGE ---
+            return interaction.reply({ 
+                content: `:concerdnedjin: uh-oh. The search Toon is about to expire and reset until ${RESET_TIME} and after that you can use it again. You must wait **${remainingSeconds} seconds** before using \`/ask\` again.`, 
+                ephemeral: true 
+            });
+            // -------------------------------
+        }
+        
+        // Set cooldown before deferring
+        userCooldowns.set(userId, now);
+
         // Defer the reply as AI generation can take a moment
         await interaction.deferReply(); 
         const prompt = interaction.options.getString('prompt');
@@ -907,7 +939,7 @@ client.on('messageCreate', async (message) => {
       await thread.send({ content: "Thread controls:", components: [row] });
     } catch { }
   }
-});
+}); // <--- ADDED MISSING CLOSING PARENTHESIS AND BRACE FOR client.on('messageCreate', ...)
 
 // ================= RULE 11: JOIN/LEAVE TROLLING =================
 client.on('guildMemberAdd', async (member) => {
@@ -998,5 +1030,3 @@ http.createServer((req, res) => {
   res.writeHead(200);
   res.end("Bot is running!");
 }).listen(PORT, () => console.log(`🌐 Server running on ${PORT}`));
-
-}
