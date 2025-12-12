@@ -38,7 +38,6 @@ const client = new Client({
     GatewayIntentBits.MessageContent, // Required to read message content for moderation/AFK prefix command
     GatewayIntentBits.GuildMembers,   // Required for member-based features (kicks, bans, nickname check, join/leave)
     GatewayIntentBits.GuildMessageReactions // Required for reacting/thread handling
-    // FIX: Removed the invalid intent 'GatewayIntentBits.MessageCreate'
   ]
 });
 // =========================================================================================
@@ -75,6 +74,80 @@ Please go to https://discord.com/channels/${GUILD_ID}/1414304297122009099
 and for more assistance please use
 https://discord.com/channels/${GUILD_ID}/1414352972304879626
 channel to create a more helpful environment to tell a mod`;
+
+// ====================== MANUAL WORD FILTER CONFIG ======================
+
+// 0. ALLOWED WORDS (WHITELIST)
+const ALLOWED_WORDS = [
+  "assist", "assistance", "assistant", "associat", 
+  "class", "classic", "glass", "grass", "pass", "bass", "compass", 
+  "hello", "shell", "peacock", "cocktail", "babcock"
+];
+
+// 1. WORDS THAT TRIGGER MESSAGE DELETION ONLY (Common swearing)
+const MILD_BAD_WORDS = [
+  "fuck", "f*ck", "f**k", "f-ck", "fck", "fu-", "f-", "f*cking", "fucking",
+  "shit", "s*it", "s**t", "sh!t",
+  "ass", "bitch", "hoe", "whore", "slut", "cunt", 
+  "dick", "pussy", "cock", "bastard", "sexy",
+];
+
+// 2. WORDS THAT TRIGGER A TIMEOUT (Slurs, threats, hate speech, extreme trolling)
+const SEVERE_WORDS = [
+  "nigger", "nigga", "niga", "faggot", "fag", "dyke", "tranny", "chink", "kike", "paki", "gook", "spic", "beaner", "coon", 
+  "retard", "spastic", "mong", "autist",
+  "kys", "kill yourself", "suicide", "rape", "molest",
+  "hitler", "nazi", "kkk",
+  "joke about harassing", "troll joke", "harassment funny", "trolling funny", "trollin", "troller"
+];
+
+// Combine both lists for the general filter used for nicknames and RP channel lockdown
+const BAD_WORDS = [...MILD_BAD_WORDS, ...SEVERE_WORDS];
+
+
+// Map for detecting Leetspeak bypasses
+const LEET_MAP = {
+    '0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '@': 'a', '$': 's', '!': 'i', '(': 'c', '+': 't', 
+    '8': 'b', '*': 'o', '9': 'g'
+};
+
+/**
+ * Normalizes text (removes non-alphanumeric, applies leetspeak) and checks for severe and mild bad words,
+ * respecting the ALLOWED_WORDS list.
+ * @param {string} text The message content.
+ * @returns {{isSevere: boolean, isMild: boolean, matchedWord: string}}
+ */
+function filterMessageManually(text) {
+    let normalized = text.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    // Apply Leetspeak translation
+    let leetNormalized = normalized.split('').map(char => LEET_MAP[char] || char).join('');
+    
+    // Function to check if a bad word is present in a normalized string
+    const checkNormalizedText = (list, normText) => {
+        for (const badWord of list) {
+            if (normText.includes(badWord)) {
+                // Check if the match is *only* a whitelisted word. This is a simple, imperfect check.
+                if (ALLOWED_WORDS.some(allowed => allowed === badWord)) continue; 
+                return badWord;
+            }
+        }
+        return null;
+    };
+    
+    // Check SEVERE words (using both normalization methods)
+    let severeMatch = checkNormalizedText(SEVERE_WORDS, normalized) || checkNormalizedText(SEVERE_WORDS, leetNormalized);
+    if (severeMatch) return { isSevere: true, isMild: false, matchedWord: severeMatch };
+
+    // Check MILD words (using both normalization methods)
+    let mildMatch = checkNormalizedText(MILD_BAD_WORDS, normalized) || checkNormalizedText(MILD_BAD_WORDS, leetNormalized);
+    if (mildMatch) return { isSevere: false, isMild: true, matchedWord: mildMatch };
+    
+    return { isSevere: false, isMild: false, matchedWord: null };
+}
+
+// ================= END MANUAL WORD FILTER CONFIG =================
+
 
 // ================= AI INITIALIZATION & CONFIGURATION =================
 const safetySettings = [
@@ -142,16 +215,26 @@ const afkStatus = new Map();
 
 // Helper: Moderate Nickname 
 async function moderateNickname(member) {
-  const NICKNAME_FILTER_WORDS = ["fuck", "shit", "ass", "bitch", "hoe", "whore", "slut", "cunt", "dick", "pussy", "cock", "nigger", "nigga", "faggot", "dyke", "tranny", "kys", "kill yourself"];
-  let displayName = member.displayName.toLowerCase().replace(/[^a-z0-9]/g, '');
+  let displayName = member.displayName.toLowerCase();
+  let normalized = displayName.replace(/[^a-z0-9]/g, ''); // remove non-alphanumeric
+  
+  // Apply Leetspeak translation
+  let leetNormalized = normalized.split('').map(char => LEET_MAP[char] || char).join('');
 
-  if (NICKNAME_FILTER_WORDS.some(word => displayName.includes(word))) {
+  const isBad = BAD_WORDS.some(badWord => {
+    // Check normalized and leetspeak normalized
+    if (normalized.includes(badWord)) return true;
+    if (leetNormalized.includes(badWord)) return true;
+    return false;
+  });
+
+  if (isBad) {
     try {
       if (member.manageable) {
         await member.setNickname("[moderated nickname by hopper]");
         
         const log = member.guild.channels.cache.get(LOG_CHANNEL_ID);
-        if (log) log.send(`🛡️ **Nickname Moderated**\nUser: <@${member.id}>\nOld Name: ||${member.user.username}||\nReason: Inappropriate Username (Static Filter)`);
+        if (log) log.send(`🛡️ **Nickname Moderated**\nUser: <@${member.id}>\nOld Name: ||${member.user.username}||\nReason: Inappropriate Username (Manual Filter)`);
         return true; 
       }
     } catch (err) {
@@ -248,21 +331,7 @@ client.once('ready', async () => {
       .setDescription('Search about stormy and hops') // <-- Updated Description
       .addStringOption(opt => opt.setName('prompt').setDescription('Your question for Hopper').setRequired(true)), // <-- Updated to Hopper
       
-    new SlashCommandBuilder()
-      .setName('sayrp')
-      .setDescription('Speak as a character (uses bot to send message)')
-      .addStringOption(opt => 
-        opt.setName('character')
-          .setDescription('The character to speak as (Stormy or Hops)')
-          .setRequired(true)
-          .addChoices(
-            { name: 'Stormy', value: 'stormy' },
-            { name: 'Hops', value: 'hops' }
-          ))
-      .addStringOption(opt => 
-        opt.setName('message')
-          .setDescription('The message to send')
-          .setRequired(true)),
+    // The /sayrp command has been removed as requested.
 
     new SlashCommandBuilder().setName('help').setDescription('Get help'),
     new SlashCommandBuilder().setName('serverinfo').setDescription('Get server information'),
@@ -333,7 +402,7 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.commandName === 'say') {
       const text = interaction.options.getString('text');
       const { isToxic } = await checkMessageToxicity(text);
-      if (isToxic) return interaction.reply({ content: "❌ That message violates the AI content filter.", ephemeral: true });
+      if (isToxic) return interaction.reply({ content: "❌ That message violates the Hopper content filter.", ephemeral: true });
       
       await interaction.channel.send(text);
       return interaction.reply({ content: "✅ Sent anonymously", ephemeral: true });
@@ -342,6 +411,12 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.commandName === 'ask') { 
         await interaction.deferReply(); 
         const prompt = interaction.options.getString('prompt');
+
+        // Check against the manual filter first (since /ask is typically about the show, it should pass unless it's a prompt trying to sneak in bad words)
+        const manualFilter = filterMessageManually(prompt);
+        if (manualFilter.isSevere || manualFilter.isMild) {
+            return interaction.editReply('❌ Your question contains inappropriate language and was blocked by the Hopper filter.');
+        }
 
         const { isToxic: promptIsToxic } = await checkMessageToxicity(prompt);
         if (promptIsToxic) {
@@ -379,58 +454,11 @@ client.on('interactionCreate', async (interaction) => {
             } else {
                 console.error('Gemini API Error:', error);
                 // --- Updated Error Message with Emojis ---
-                const timePlaceholder = "3:00 PM EST 12/12/2025"; 
+                const timePlaceholder = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }); 
                 await interaction.editReply(`<:scaredcloudy:1448751027950977117> uh-oh I am unable to get information right now please wait until [Your time: ${timePlaceholder}] <:heartkatie:1448751305756639372>`);
             }
         }
         return;
-    }
-
-    if (interaction.commandName === 'sayrp') {
-      const character = interaction.options.getString('character');
-      const message = interaction.options.getString('message');
-      
-      const { isToxic } = await checkMessageToxicity(message);
-      if (isToxic) return interaction.reply({ content: "❌ That message violates the AI content filter and cannot be sent.", ephemeral: true });
-      
-      if (interaction.channel.id !== RP_CHANNEL_ID) return interaction.reply({ content: `❌ This command can only be used in the <#${RP_CHANNEL_ID}> channel.`, ephemeral: true });
-
-
-      let contentToSend = '';
-      let replyContent = '';
-      let fileAttachment = null; 
-
-      if (character === 'stormy') {
-        contentToSend = `**Stormy Bunny:** ${message}`;
-        replyContent = `✅ Message sent as **Stormy**!`;
-        
-        if (STORMY_IMAGE_URL && !STORMY_IMAGE_URL.includes('YOUR_LINK')) {
-            fileAttachment = [{ attachment: STORMY_IMAGE_URL, name: 'stormy_rp_image.png' }];
-        } else {
-            replyContent += "\n⚠️ **NOTE:** Stormy's image URL placeholder is still set. The image will not be attached until you replace 'YOUR_LINK_TO_STORMY_RP_IMAGE.png' with a real URL in the CONFIG.";
-        }
-
-      } else if (character === 'hops') {
-        contentToSend = `**Hops (Bot):** ${message}`;
-        replyContent = `✅ Message sent as **Hops**!`;
-      } else {
-        return interaction.reply({ content: "Invalid character selected.", ephemeral: true });
-      }
-
-      try {
-        await interaction.channel.send({
-          content: contentToSend,
-          files: fileAttachment ? fileAttachment : [],
-          allowedMentions: { parse: [] }
-        });
-        
-        await interaction.reply({ content: replyContent, ephemeral: true });
-
-      } catch (error) {
-        console.error('Failed to send RP message:', error);
-        await interaction.reply({ content: '❌ Failed to send RP message. Check bot permissions.', ephemeral: true });
-      }
-      return; 
     }
 
     if (interaction.commandName === 'help') {
@@ -755,6 +783,7 @@ client.on('messageCreate', async (message) => {
   if (lowerContent.startsWith('?afk')) {
       const reason = content.slice(4).trim() || 'I am currently away.';
       
+      // AFK reason also gets checked by the AI filter
       const { isToxic } = await checkMessageToxicity(reason);
       if (isToxic) {
           await message.delete().catch(() => {});
@@ -780,9 +809,37 @@ client.on('messageCreate', async (message) => {
                         (lowerContent.includes('tenor.com') || lowerContent.includes('giphy.com') || lowerContent.endsWith('.gif')) &&
                         message.attachments.size === 0; 
 
-  // --- AI TOXICITY CHECK ---
+  // --- MANUAL WORD FILTER CHECK (FIRST LINE OF DEFENSE) ---
+  const manualFilter = filterMessageManually(content);
+  
+  if (manualFilter.isSevere) {
+      await message.delete().catch(() => {});
+      try {
+        if (member && member.manageable) {
+            // Severe word triggers 60m timeout
+            await member.timeout(60 * 60 * 1000, `Manual Severe Word Detected: ${manualFilter.matchedWord}`); 
+        }
+        const log = client.channels.cache.get(LOG_CHANNEL_ID);
+        if (log) log.send(`🛑 **MANUAL Filter Violation (Timeout 60m)**\nUser: <@${message.author.id}>\nReason: Severe word match: ${manualFilter.matchedWord}\nContent: ||${message.content}||`);
+      } catch (e) {
+          console.error("Failed to apply manual severe moderation action:", e);
+      }
+      return; 
+  }
+  
+  if (manualFilter.isMild) {
+      await message.delete().catch(() => {});
+      const log = client.channels.cache.get(LOG_CHANNEL_ID);
+      if (log) log.send(`🗑️ **MANUAL Filter Violation (Deleted)**\nUser: <@${message.author.id}>\nReason: Mild word match: ${manualFilter.matchedWord}\nContent: ||${message.content}||`);
+      return;
+  }
+  // --- END MANUAL WORD FILTER CHECK ---
+
+
+  // --- AI TOXICITY CHECK (SECOND LAYER DEFENSE) ---
   const { isToxic, blockCategory } = await checkMessageToxicity(content);
-  // -------------------------
+  // ------------------------------------------------
+
 
   // RULE: INAPPROPRIATE RP LOCKDOWN 
   if (message.channel.id === RP_CHANNEL_ID && isToxic) {
@@ -795,7 +852,7 @@ client.on('messageCreate', async (message) => {
               }
               await message.delete().catch(() => {});
               const log = client.channels.cache.get(LOG_CHANNEL_ID);
-              if (log) log.send(`🔒 **RP Category Lockdown**\nCategory <#${RP_CATEGORY_ID}> locked down due to inappropriate RP attempt by <@${message.author.id}> in <#${RP_CHANNEL_ID}>.\nAI Reason: ${blockCategory}\nMessage: ||${message.content}||`);
+              if (log) log.send(`🔒 **RP Category Lockdown**\nCategory <#${RP_CATEGORY_ID}> locked down due to inappropriate RP attempt by <@${message.author.id}> in <#${RP_CHANNEL_ID}>.\nHopper AI Reason: ${blockCategory}\nMessage: ||${message.content}||`);
               return; 
           } catch (e) {
               console.error("Failed to lock RP category:", e);
@@ -812,24 +869,24 @@ client.on('messageCreate', async (message) => {
   // --- START GENERAL MODERATION BLOCK ---
   if (message.channel.id !== TARGET_CHANNEL_ID && !isPureGIFLink) {
     
-    // --- AI MODERATION ACTION ---
+    // --- AI MODERATION ACTION (TIMEOUT FOR GENERAL TOXICITY/SLURS MISSED BY MANUAL FILTER) ---
     if (isToxic) {
       await message.delete().catch(() => {});
       
       try {
         if (member && member.manageable) {
-            await member.timeout(30 * 60 * 1000, `AI Detected Severe Violation: ${blockCategory}`).catch(() => {}); 
+            await member.timeout(30 * 60 * 1000, `Hopper AI Detected Severe Violation: ${blockCategory}`).catch(() => {}); 
         }
         
         const log = client.channels.cache.get(LOG_CHANNEL_ID);
-        if (log) log.send(`🚨 **AI Filter Violation (Timeout 30m)**\nUser: <@${message.author.id}>\nAI Reason: ${blockCategory}\nContent: ||${message.content}||`);
+        if (log) log.send(`🚨 **Hopper AI Filter Violation (Timeout 30m)**\nUser: <@${message.author.id}>\nAI Reason: ${blockCategory}\nContent: ||${message.content}||`);
       } catch (e) {
           console.error("Failed to apply AI moderation action:", e);
       }
       return;
     }
     
-    // RULE: ANTI-HARASSMENT / ANTI-TROLLING (MUTE)
+    // RULE: ANTI-HARASSMENT / ANTI-TROLLING (MUTE) - Legacy Regex (Kept as user requested no other changes)
     const explicitTrollHarassRegex = /(^|\s)(mute|ban|harass|troll|bullying)\s+(that|him|her|them)\s+(\S+|$)|(you\s+(are|re)\s+(a|an)?\s+(troll|bully|harasser))/i;
 
     if (explicitTrollHarassRegex.test(lowerContent)) {
