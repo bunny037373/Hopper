@@ -2,9 +2,9 @@
   "name": "hopper-discord-bot",
   "version": "1.0.0",
   "description": "A feature-rich Discord bot with moderation, filters, and custom systems.",
-  "main": "index 2.js",
+  "main": "index.js",
   "scripts": {
-    "start": "node \"index 2.js\""
+    "start": "node index.js" // <--- CRITICAL FIX: Ensure this is the file name you are using.
   },
   "dependencies": {
     "discord.js": "^14.14.1",
