@@ -9,13 +9,19 @@ const {
   Routes,
   SlashCommandBuilder,
   PermissionsBitField,
-  ThreadChannel, // Import ThreadChannel for type checking
+  ThreadChannel,
+  AttachmentBuilder // Needed for sending images
 } = require('discord.js');
 const http = require('http');
 
 // --- AI Import ---
 const { GoogleGenAI, HarmCategory, HarmBlockThreshold } = require('@google/genai');
-// -----------------
+
+// --- Image Generation Import ---
+const { RankCardBuilder, LeaderboardBuilder, Font } = require('canvacord');
+// Load the default font for image generation
+Font.loadDefault();
+// ------------------------------
 
 // Check for the mandatory token environment variable
 if (!process.env.TOKEN) {
@@ -23,21 +29,21 @@ if (!process.env.TOKEN) {
   process.exit(1);
 }
 
-// --- AI Key Check ---\
+// --- AI Key Check ---
 if (!process.env.GEMINI_API_KEY) {
   console.error("❌ GEMINI_API_KEY not found. Add GEMINI_API_KEY in Render Environment Variables to enable AI.");
   process.exit(1);
 }
-// --------------------\
+// --------------------
 
 // ====================== 🟢 CRITICAL FIX: CLIENT INITIALIZATION 🟢 ======================
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent, // Required to read message content for moderation/AFK prefix command
-    GatewayIntentBits.GuildMembers,   // Required for member-based features (kicks, bans, nickname check, join/leave)
-    GatewayIntentBits.GuildMessageReactions // Required for reacting/thread handling
+    GatewayIntentBits.MessageContent, 
+    GatewayIntentBits.GuildMembers,   
+    GatewayIntentBits.GuildMessageReactions 
   ]
 });
 // =========================================================================================
@@ -48,22 +54,24 @@ const client = new Client({
 // ** CRITICAL: REPLACE THIS WITH THE DIRECT LINK TO STORMY'S RP IMAGE **
 const STORMY_IMAGE_URL = 'YOUR_LINK_TO_STORMY_RP_IMAGE.png'; 
 
+// ** CRITICAL: REPLACE THIS WITH YOUR CUSTOM RANK CARD BACKGROUND IMAGE URL **
+// It must be a direct link to a PNG or JPG file.
+const RANK_CARD_BACKGROUND_URL = 'https://i.imgur.com/r62Y0c7.png'; 
+
 // --- DISCORD IDs ---
-// GET THESE IDs FROM YOUR SERVER (User Settings > Advanced > Developer Mode)
-const GUILD_ID = '1369477266958192720';           // <<--- REPLACE with your Server ID
-const TARGET_CHANNEL_ID = '1415134887232540764'; // <<--- REPLACE with your Image-Only Channel ID
-const LOG_CHANNEL_ID = '1414286807360602112';    // <<--- REPLACE with your Moderation Log Channel ID
-const TRANSCRIPT_CHANNEL_ID = '1414354204079689849';// <<--- REPLACE with your Ticket Transcript Channel ID   
-const SETUP_POST_CHANNEL = '1445628128423579660';   // <<--- REPLACE with channel ID where the "Create Ticket" button is posted
-const MUTE_ROLE_ID = '1446530920650899536';        // <<--- REPLACE with your Mute Role ID         
-const RP_CHANNEL_ID = '1421219064985948346';      // <<--- REPLACE with your Roleplay Channel ID
-const RP_CATEGORY_ID = '1446530920650899536';      // <<--- REPLACE with your Roleplay Category ID (for lockdown)
+const GUILD_ID = '1369477266958192720';           
+const TARGET_CHANNEL_ID = '1415134887232540764'; 
+const LOG_CHANNEL_ID = '1414286807360602112';    
+const TRANSCRIPT_CHANNEL_ID = '1414354204079689849';
+const SETUP_POST_CHANNEL = '1445628128423579660';   
+const MUTE_ROLE_ID = '1446530920650899536';        
+const RP_CHANNEL_ID = '1421219064985948346';      
+const RP_CATEGORY_ID = '1446530920650899536';      
 
 // --- LEVELING/XP CONFIGURATION ---
 const AFK_XP_EXCLUSION_CHANNEL_ID = '1414352027034583080';
 const BOOSTER_ROLE_ID = '1400596498969923685'; 
 
-// Level Role Map (cleaned IDs from user input)
 const LEVEL_ROLES = {
     5: '1418567907662630964',
     10: '1418568030132244611',
@@ -77,11 +85,8 @@ const LEVEL_ROLES = {
 // ====================== END CRITICAL CONFIGURATION ======================
 
 
-// ** AVATAR URLS (Kept for consistency, but bot's own avatar is used for Hops) **
 const STORMY_AVATAR_URL = 'https://i.imgur.com/r62Y0c7.png'; 
 const HOPS_AVATAR_URL = 'https://i.imgur.com/r62Y0c7.png';     
-
-// NICKNAME SCAN INTERVAL (5 seconds = 5000 milliseconds)
 const NICKNAME_SCAN_INTERVAL = 5 * 1000;
 
 const HELP_MESSAGE = `hello! Do you need help?
@@ -91,24 +96,15 @@ https://discord.com/channels/${GUILD_ID}/1414352972304879626
 channel to create a more helpful environment to tell a mod`;
 
 // ====================== IN-MEMORY DATA STORAGE ======================
-/**
- * Stores XP/Level data: { userId: { xp: number, level: number } } 
- * NOTE: This data resets when the bot restarts.
- */
 const userLevels = {}; 
-const xpCooldown = new Map(); // { userId: timestamp for next XP gain }
-const dailyCooldown = new Map(); // { userId: timestamp for next daily claim }
+const xpCooldown = new Map(); 
+const dailyCooldown = new Map(); 
 const joinTracker = new Map(); 
 const afkStatus = new Map(); 
 // ====================================================================
 
 // ====================== LEVELING SYSTEM FUNCTIONS ======================
 
-/**
- * Calculates the level from raw XP using the formula: 5*L^2 + 50*L + 100.
- * @param {number} totalXp 
- * @returns {{level: number, xpForNext: number, xpNeeded: number}}
- */
 function calculateLevel(totalXp) {
     let level = 0;
     let xpRemaining = totalXp;
@@ -123,20 +119,12 @@ function calculateLevel(totalXp) {
     return { level, xpForNext: xpNeeded, xpNeeded: xpRemaining };
 }
 
-
-/**
- * Handles adding and removing level roles.
- * @param {object} member Discord.js GuildMember
- * @param {number} newLevel The user's current level.
- */
 async function handleLevelRoles(member, newLevel) {
     const guild = member.guild;
     const levelKeys = Object.keys(LEVEL_ROLES).map(Number).sort((a, b) => b - a);
 
     try {
         let roleToAddId = null;
-        
-        // 1. Determine the highest role to grant
         for (const levelThreshold of levelKeys) {
             if (newLevel >= levelThreshold) {
                 roleToAddId = LEVEL_ROLES[levelThreshold];
@@ -144,11 +132,9 @@ async function handleLevelRoles(member, newLevel) {
             }
         }
 
-        // 2. Add the highest role and remove all others
         for (const levelThreshold of levelKeys) {
             const roleId = LEVEL_ROLES[levelThreshold];
             const role = guild.roles.cache.get(roleId);
-
             if (!role) continue;
 
             if (roleId === roleToAddId) {
@@ -166,16 +152,9 @@ async function handleLevelRoles(member, newLevel) {
     }
 }
 
-/**
- * Adds XP, checks for level up, and applies rewards.
- * @param {object} member Discord.js GuildMember
- * @param {number} xpAmount XP to add
- * @param {object} message Discord.js Message (optional, used to send level up message)
- */
 async function addXP(member, xpAmount, message = null) {
     const userId = member.id;
     
-    // Initialize user data if needed
     if (!userLevels[userId]) {
         userLevels[userId] = { xp: 0, level: 0 };
     }
@@ -188,29 +167,21 @@ async function addXP(member, xpAmount, message = null) {
     userLevels[userId].level = level;
     
     if (level > oldLevel) {
-        // --- LEVEL UP MESSAGE ---
         if (message && message.channel) {
             message.channel.send(`${member.toString()} wow toon! You are now level **${level}**! Keep messaging and you unlock new level up roles!`);
         }
-        
-        // --- ROLE REWARD LOGIC ---
         await handleLevelRoles(member, level);
     }
 }
 
-// ====================== END LEVELING SYSTEM FUNCTIONS ======================
-
-
 // ====================== MANUAL WORD FILTER CONFIG ======================
 
-// 0. ALLOWED WORDS (WHITELIST)
 const ALLOWED_WORDS = [
   "assist", "assistance", "assistant", "associat", 
   "class", "classic", "glass", "grass", "pass", "bass", "compass", 
   "hello", "shell", "peacock", "cocktail", "babcock"
 ];
 
-// 1. WORDS THAT TRIGGER MESSAGE DELETION ONLY (Common swearing)
 const MILD_BAD_WORDS = [
   "fuck", "f*ck", "f**k", "f-ck", "fck", "fu-", "f-", "f*cking", "fucking",
   "shit", "s*it", "s**t", "sh!t",
@@ -218,7 +189,6 @@ const MILD_BAD_WORDS = [
   "dick", "pussy", "cock", "bastard", "sexy",
 ];
 
-// 2. WORDS THAT TRIGGER A TIMEOUT (Slurs, threats, hate speech, extreme trolling)
 const SEVERE_WORDS = [
   "nigger", "nigga", "niga", "faggot", "fag", "dyke", "tranny", "chink", "kike", "paki", "gook", "spic", "beaner", "coon", 
   "retard", "spastic", "mong", "autist",
@@ -227,33 +197,20 @@ const SEVERE_WORDS = [
   "joke about harassing", "troll joke", "harassment funny", "trolling funny", "trollin", "troller"
 ];
 
-// Combine both lists for the general filter used for nicknames and RP channel lockdown
 const BAD_WORDS = [...MILD_BAD_WORDS, ...SEVERE_WORDS];
 
-
-// Map for detecting Leetspeak bypasses
 const LEET_MAP = {
     '0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '@': 'a', '$': 's', '!': 'i', '(': 'c', '+': 't', 
     '8': 'b', '*': 'o', '9': 'g'
 };
 
-/**
- * Normalizes text (removes non-alphanumeric, applies leetspeak) and checks for severe and mild bad words,
- * respecting the ALLOWED_WORDS list.
- * @param {string} text The message content.
- * @returns {{isSevere: boolean, isMild: boolean, matchedWord: string}}
- */
 function filterMessageManually(text) {
     let normalized = text.toLowerCase().replace(/[^a-z0-9]/g, '');
-
-    // Apply Leetspeak translation
     let leetNormalized = normalized.split('').map(char => LEET_MAP[char] || char).join('');
     
-    // Function to check if a bad word is present in a normalized string
     const checkNormalizedText = (list, normText) => {
         for (const badWord of list) {
             if (normText.includes(badWord)) {
-                // Check if the match is *only* a whitelisted word. This is a simple, imperfect check.
                 if (ALLOWED_WORDS.some(allowed => allowed === badWord)) continue; 
                 return badWord;
             }
@@ -261,19 +218,14 @@ function filterMessageManually(text) {
         return null;
     };
     
-    // Check SEVERE words (using both normalization methods)
     let severeMatch = checkNormalizedText(SEVERE_WORDS, normalized) || checkNormalizedText(SEVERE_WORDS, leetNormalized);
     if (severeMatch) return { isSevere: true, isMild: false, matchedWord: severeMatch };
 
-    // Check MILD words (using both normalization methods)
     let mildMatch = checkNormalizedText(MILD_BAD_WORDS, normalized) || checkNormalizedText(MILD_BAD_WORDS, leetNormalized);
     if (mildMatch) return { isSevere: false, isMild: true, matchedWord: mildMatch };
     
     return { isSevere: false, isMild: false, matchedWord: null };
 }
-
-// ================= END MANUAL WORD FILTER CONFIG =================
-
 
 // ================= AI INITIALIZATION & CONFIGURATION =================
 const safetySettings = [
@@ -290,11 +242,6 @@ const safetySettings = [
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const aiModel = 'gemini-2.5-flash';
 
-/**
- * Uses Gemini to analyze a message for toxic content (slurs, harassment).
- * * @param {string} text The message content to check.
- * @returns {Promise<{isToxic: boolean, blockCategory: string}>}
- */
 async function checkMessageToxicity(text) {
   if (text.length === 0) return { isToxic: false, blockCategory: 'None' };
   
@@ -307,7 +254,6 @@ async function checkMessageToxicity(text) {
 
     if (response.candidates && response.candidates.length > 0) {
         const candidate = response.candidates[0];
-        
         if (candidate.finishReason === 'SAFETY') {
             const blockedCategory = candidate.safetyRatings.map(r => {
                 if (r.probability === 'MEDIUM' || r.probability === 'HIGH' || r.probability === 'LOW') {
@@ -315,31 +261,24 @@ async function checkMessageToxicity(text) {
                 }
                 return null;
             }).filter(Boolean).join(' & ');
-
             return { isToxic: true, blockCategory: blockedCategory || 'Unknown' };
         }
     }
     return { isToxic: false, blockCategory: 'None' };
-
   } catch (error) {
     console.error('Gemini Moderation API Error:', error);
     return { isToxic: false, blockCategory: 'API_Error' }; 
   }
 }
 
-// ================= END AI INITIALIZATION & CONFIGURATION =================
+// ================= END AI INITIALIZATION =================
 
-
-// Helper: Moderate Nickname 
 async function moderateNickname(member) {
   let displayName = member.displayName.toLowerCase();
-  let normalized = displayName.replace(/[^a-z0-9]/g, ''); // remove non-alphanumeric
-  
-  // Apply Leetspeak translation
+  let normalized = displayName.replace(/[^a-z0-9]/g, '');
   let leetNormalized = normalized.split('').map(char => LEET_MAP[char] || char).join('');
 
   const isBad = BAD_WORDS.some(badWord => {
-    // Check normalized and leetspeak normalized
     if (normalized.includes(badWord)) return true;
     if (leetNormalized.includes(badWord)) return true;
     return false;
@@ -349,7 +288,6 @@ async function moderateNickname(member) {
     try {
       if (member.manageable) {
         await member.setNickname("[moderated nickname by hopper]");
-        
         const log = member.guild.channels.cache.get(LOG_CHANNEL_ID);
         if (log) log.send(`🛡️ **Nickname Moderated**\nUser: <@${member.id}>\nOld Name: ||${member.user.username}||\nReason: Inappropriate Username (Manual Filter)`);
         return true; 
@@ -362,45 +300,31 @@ async function moderateNickname(member) {
   return false; 
 }
 
-
-/**
- * RECURRING FUNCTION: Checks all nicknames in the guild repeatedly.
- */
 async function runAutomatedNicknameScan(guild) {
     if (!guild) return; 
     let moderatedCount = 0;
-    
     try {
         const members = await guild.members.fetch(); 
-        
         for (const [id, member] of members) {
             if (member.user.bot) continue;
-            
             if (await moderateNickname(member)) {
                 moderatedCount++;
             }
         }
-        
         if (moderatedCount > 0) {
             const log = guild.channels.cache.get(LOG_CHANNEL_ID);
             if (log) log.send(`✅ **Recurring Scan Complete:** Checked ${members.size} members. Moderated **${moderatedCount}** inappropriate names.`);
         }
-        
     } catch (error) {
         console.error('Automated Nickname Scan failed:', error);
     }
 }
 
-/**
- * Starts the recurring nickname scan.
- */
 function startAutomatedNicknameScan(guild) {
     runAutomatedNicknameScan(guild); 
-    
     setInterval(() => {
         runAutomatedNicknameScan(guild);
     }, NICKNAME_SCAN_INTERVAL);
-
     console.log(`Automated nickname scan started, running every ${NICKNAME_SCAN_INTERVAL / 1000} seconds.`);
 }
 
@@ -409,7 +333,6 @@ function startAutomatedNicknameScan(guild) {
 client.once('ready', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 
-  // --- ANTI-INVITE PROTECTION (ON BOOT) ---
   client.guilds.cache.forEach(async (guild) => {
     if (guild.id !== GUILD_ID) {
         console.log(`❌ Found unauthorized server on startup: ${guild.name} (${guild.id}). Leaving...`);
@@ -420,22 +343,17 @@ client.once('ready', async () => {
         }
     }
   });
-  // ----------------------------------------
 
-  // Set bot presence
   client.user.setPresence({
     activities: [{ name: 'hopping all around Toon Springs', type: 0 }],
     status: 'online'
   });
 
-  // START RECURRING NICKNAME CHECK
   const guild = client.guilds.cache.get(GUILD_ID);
   if (guild) {
       startAutomatedNicknameScan(guild); 
   }
 
-
-  // Register slash commands
   const commands = [
     new SlashCommandBuilder()
       .setName('say')
@@ -450,7 +368,6 @@ client.once('ready', async () => {
     new SlashCommandBuilder().setName('help').setDescription('Get help'),
     new SlashCommandBuilder().setName('serverinfo').setDescription('Get server information'),
 
-    // --- New Utility/Mod Commands ---
     new SlashCommandBuilder()
       .setName('clear')
       .setDescription('Delete a number of messages to clean chat (Mod only)')
@@ -486,10 +403,10 @@ client.once('ready', async () => {
         
     new SlashCommandBuilder()
         .setName('rank')
-        .setDescription('Show your current level, XP, and rank card (customizable feature placeholder).')
+        .setDescription('Show your level rank card.')
         .addUserOption(opt => opt.setName('user').setDescription('User to check (default: self)').setRequired(false)),
 
-    // --- XP Mod Commands (Moderator only) ---
+    // --- XP Mod Commands ---
     new SlashCommandBuilder()
         .setName('givexp')
         .setDescription('Give a user XP (Mod only)')
@@ -508,7 +425,6 @@ client.once('ready', async () => {
         .addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true))
         .addIntegerOption(opt => opt.setName('level').setDescription('Target level').setRequired(true)),
 
-    // Mod Commands (Existing)
     new SlashCommandBuilder()
       .setName('kick')
       .setDescription('Kick a member')
@@ -539,7 +455,6 @@ client.once('ready', async () => {
   const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
   try {
     console.log('⚡ Registering commands...');
-    // Register commands globally for this specific guild
     await rest.put(Routes.applicationGuildCommands(client.user.id, GUILD_ID), { body: commands });
     console.log('✅ Slash commands registered.');
   } catch (err) {
@@ -549,7 +464,6 @@ client.once('ready', async () => {
 
 // ================= ANTI-INVITE PROTECTION (EVENT) =================
 client.on('guildCreate', async (guild) => {
-    // If the bot is invited to a server that is NOT the GUILD_ID, leave it.
     if (guild.id !== GUILD_ID) {
         console.log(`⚠️ Bot was invited to unauthorized server: ${guild.name} (${guild.id}). Leaving immediately.`);
         try {
@@ -602,9 +516,7 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         try {
-            // --- UPDATED SYSTEM INSTRUCTION & GOOGLE SEARCH GROUNDING ---
             const systemInstruction = "You are the character Hops Bunny, an assistant for the 'Stormy and Hops' Discord server. You MUST use Google Search for grounding, but you are strictly limited to ONLY providing information found on the following official and fandom sources: stormy-and-hops.fandom.com, stormyandhops.netlify.app, X.com/stormyandhops, X.com/bunnytoonsstudios, and YouTube.com/stormyandhops. DO NOT use any other external information source. Your answers must be about the Stormy and Hops universe only. Maintain a friendly, server-appropriate 'Hopper' tone, and incorporate the provided custom server emojis into your responses when appropriate: <:MrLuck:1448751843885842623>, <:cheeringstormy:1448751467400790206>, <:concerdnedjin:1448751740030816481>, <:happymissdiamond:1448752668259647619>, <:heartkatie:1448751305756639372>, <:madscarlet:1448751667863355482>, <:mischevousoscar:1448752833951305789>, <:questioninghops:1448751559067308053>, <:ragingpaul:1448752763164037295>, <:scaredcloudy:1448751027950977117>, <:thinking_preston:1448751103822004437>, <:tiredscout:1448751394881278043>, and <:Stormyandhopslogo:1448502746113118291>.";
-            // --------------------------------------------------------------------------
             
             const result = await ai.models.generateContent({
                 model: aiModel,
@@ -612,7 +524,7 @@ client.on('interactionCreate', async (interaction) => {
                 safetySettings: safetySettings,
                 config: { 
                     systemInstruction: systemInstruction,
-                    tools: [{ googleSearch: {} }], // <-- Enable Google Search Grounding for fresh, relevant results
+                    tools: [{ googleSearch: {} }], 
                 }
             });
 
@@ -620,10 +532,8 @@ client.on('interactionCreate', async (interaction) => {
 
             if (responseText.length > 2000) {
                 const shortenedResponse = responseText.substring(0, 1900) + '... (truncated)';
-                // --- Updated Response Format ---
                 await interaction.editReply(`🐰 **Hopper response (Truncated):**\n\n${shortenedResponse}`);
             } else {
-                // --- Updated Response Format ---
                 await interaction.editReply(`🐰 **Hopper response:**\n\n${responseText}`);
             }
         } catch (error) {
@@ -631,7 +541,6 @@ client.on('interactionCreate', async (interaction) => {
                 await interaction.editReply('❌ My generated response was blocked by the safety filter. Please try a different prompt.');
             } else {
                 console.error('Gemini API Error:', error);
-                // --- Updated Error Message with Emojis ---
                 const timePlaceholder = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }); 
                 await interaction.editReply(`<:scaredcloudy:1448751027950977117> uh-oh I am unable to get information right now please wait until [Your time: ${timePlaceholder}] <:heartkatie:1448751305756639372>`);
             }
@@ -660,7 +569,6 @@ client.on('interactionCreate', async (interaction) => {
         }
         await interaction.deferReply({ ephemeral: true });
         try {
-            // Delete messages + 1 to delete the command message itself
             const fetched = await interaction.channel.messages.fetch({ limit: amount + 1 });
             const deleted = await interaction.channel.bulkDelete(fetched, true); 
             return interaction.editReply(`✅ Successfully deleted ${deleted.size - 1} messages.`);
@@ -680,9 +588,8 @@ client.on('interactionCreate', async (interaction) => {
             const everyoneRole = channel.guild.roles.cache.find(r => r.name === '@everyone');
             if (!everyoneRole) return interaction.reply({ content: '❌ Could not find @everyone role.', ephemeral: true });
 
-            // Deny/Allow SendMessages for the @everyone role
             await channel.permissionOverwrites.edit(everyoneRole, {
-                SendMessages: lock ? false : null, // null means inherit/remove explicit deny
+                SendMessages: lock ? false : null, 
             });
 
             return interaction.reply(`✅ Channel ${channel} has been **${lock ? 'locked' : 'unlocked'}**.`);
@@ -711,26 +618,38 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: info, ephemeral: true });
     }
     
-    // --- New Leveling/XP Command Handlers ---
+    // --- New Leveling/XP Command Handlers (UPDATED TO USE CANVACORD) ---
     
     if (interaction.commandName === 'rank') {
+        await interaction.deferReply();
         const user = interaction.options.getUser('user') || interaction.user;
         const userData = userLevels[user.id] || { xp: 0, level: 0 };
         const { level, xpForNext, xpNeeded } = calculateLevel(userData.xp);
         
-        let rankMessage = `**${user.tag}'s Level Status**\n`;
-        rankMessage += `> **Level:** ${level}\n`;
-        rankMessage += `> **XP:** ${xpNeeded} / ${xpForNext} XP to next level\n`;
-        
         // Find the user's rank
         const sortedUsers = Object.entries(userLevels).sort(([, a], [, b]) => b.xp - a.xp);
-        const rank = sortedUsers.findIndex(([id]) => id === user.id) + 1;
-        rankMessage += `> **Rank:** #${rank} (out of ${sortedUsers.length})\n`;
-        
-        // Placeholder for the /card functionality
-        rankMessage += `\n*Toon, you asked to customize your level card background! Use the /rank or /card command. This bot does not currently support image generation, but this command shows your stats!*`;
-        
-        return interaction.reply({ content: rankMessage });
+        const rankIndex = sortedUsers.findIndex(([id]) => id === user.id) + 1;
+
+        try {
+            const rankCard = new RankCardBuilder()
+                .setDisplayName(user.username) // Use username
+                .setUsername(user.username)
+                .setAvatar(user.displayAvatarURL({ extension: 'png', size: 512 }))
+                .setCurrentXP(xpNeeded) // XP within current level
+                .setRequiredXP(xpForNext) // Total XP needed for next level
+                .setLevel(level)
+                .setRank(rankIndex || 1)
+                .setStatus('online') // Default status
+                .setBackground(RANK_CARD_BACKGROUND_URL); 
+
+            const data = await rankCard.build({ format: 'png' });
+            const attachment = new AttachmentBuilder(data, { name: 'rank.png' });
+            
+            return interaction.editReply({ files: [attachment] });
+        } catch (e) {
+            console.error("Failed to generate rank card:", e);
+            return interaction.editReply(`❌ Failed to generate rank card. (Error: ${e.message})`);
+        }
     }
     
     if (interaction.commandName === 'daily') {
@@ -753,24 +672,56 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (interaction.commandName === 'leaderboard') {
+        await interaction.deferReply();
         const sortedUsers = Object.entries(userLevels)
             .sort(([, a], [, b]) => b.level - a.level || b.xp - a.xp)
             .slice(0, 10);
             
-        let leaderboard = "🏆 **Hopper's Top 10 Toons!**\n";
-        
-        for (let i = 0; i < sortedUsers.length; i++) {
-            const [userId, data] = sortedUsers[i];
-            const member = interaction.guild.members.cache.get(userId);
-            const userTag = member ? member.user.username : `Unknown User (${userId})`;
-            leaderboard += `${i + 1}. **Level ${data.level}** - ${userTag}\n`;
-        }
-        
         if (sortedUsers.length === 0) {
-            leaderboard += "No one has gained XP yet! Start chatting!";
+            return interaction.editReply("No one has gained XP yet! Start chatting!");
         }
-        
-        return interaction.reply({ content: leaderboard });
+
+        try {
+            // Transform data for Canvacord
+            const players = sortedUsers.map(([userId, data], index) => {
+                const member = interaction.guild.members.cache.get(userId);
+                const user = member ? member.user : { username: 'Unknown', displayAvatarURL: () => 'https://cdn.discordapp.com/embed/avatars/0.png' };
+                return {
+                    avatar: user.displayAvatarURL({ extension: 'png' }),
+                    username: user.username,
+                    displayName: user.username,
+                    level: data.level,
+                    xp: data.xp,
+                    rank: index + 1
+                };
+            });
+
+            const lb = new LeaderboardBuilder()
+                .setHeader({
+                    title: 'Toon Springs Top 10',
+                    image: STORMY_AVATAR_URL, 
+                    subtitle: `${Object.keys(userLevels).length} members`
+                })
+                .setPlayers(players)
+                .setBackground(RANK_CARD_BACKGROUND_URL); // Using same background for consistency
+
+            const data = await lb.build({ format: 'png' });
+            const attachment = new AttachmentBuilder(data, { name: 'leaderboard.png' });
+
+            return interaction.editReply({ files: [attachment] });
+
+        } catch (e) {
+            console.error("Failed to generate leaderboard:", e);
+            // Fallback to text leaderboard if image fails
+            let textLeaderboard = "🏆 **Hopper's Top 10 Toons!** (Image Generation Failed)\n";
+            for (let i = 0; i < sortedUsers.length; i++) {
+                const [userId, data] = sortedUsers[i];
+                const member = interaction.guild.members.cache.get(userId);
+                const userTag = member ? member.user.username : `Unknown User (${userId})`;
+                textLeaderboard += `${i + 1}. **Level ${data.level}** - ${userTag}\n`;
+            }
+            return interaction.editReply({ content: textLeaderboard });
+        }
     }
     
     if (interaction.commandName === 'quest') {
@@ -786,7 +737,6 @@ client.on('interactionCreate', async (interaction) => {
         if (!member) return interaction.reply({ content: "❌ User not found in server.", ephemeral: true });
         if (xpAmount <= 0) return interaction.reply({ content: "❌ XP must be positive.", ephemeral: true });
         
-        // Pass null for message to prevent level up message from spamming mod channel
         await addXP(member, xpAmount, null);
         
         const currentData = userLevels[user.id];
@@ -807,7 +757,6 @@ client.on('interactionCreate', async (interaction) => {
         const { level } = calculateLevel(userLevels[user.id].xp);
         userLevels[user.id].level = level; 
         
-        // Recalculate and apply roles after reduction
         await handleLevelRoles(member, level);
 
         return interaction.reply({ content: `✅ Took away **${xpAmount} XP** from ${user.tag}. New Level: **${level}** (Total XP: ${userLevels[user.id].xp}).`, ephemeral: true });
@@ -821,7 +770,6 @@ client.on('interactionCreate', async (interaction) => {
         if (!member) return interaction.reply({ content: "❌ User not found in server.", ephemeral: true });
         if (targetLevel < 0) targetLevel = 0;
 
-        // Calculate XP required to reach the start of targetLevel (Level 0 starts at 0 XP)
         let totalXP = 0;
         for (let l = 0; l < targetLevel; l++) {
              totalXP += 5 * l * l + 50 * l + 100;
@@ -829,13 +777,12 @@ client.on('interactionCreate', async (interaction) => {
 
         userLevels[user.id] = { xp: totalXP, level: targetLevel };
         
-        // Handle role removal/addition based on new level
         await handleLevelRoles(member, targetLevel);
 
         return interaction.reply({ content: `✅ Set level for ${user.tag} to **${targetLevel}**.`, ephemeral: true });
     }
 
-    // --- Moderation Commands (Existing) ---
+    // --- Moderation Commands ---
 
     if (interaction.commandName === 'kick') {
       const user = interaction.options.getUser('user');
@@ -1060,7 +1007,6 @@ If they want to close it there will be a Close button on top. When close is conf
         return interaction.reply({ content: "❌ Use this command inside a thread.", ephemeral: true });
       }
       
-      // Check if user is the thread creator OR a moderator (ManageMessages/ManageThreads)
       const isThreadStarter = thread.ownerId === interaction.user.id;
       const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages) || interaction.member.permissions.has(PermissionsBitField.Flags.ManageThreads);
 
@@ -1117,12 +1063,10 @@ client.on('messageCreate', async (message) => {
           
           let xpToAward = XP_GAIN;
 
-          // Booster XP Multiplier check
           if (member && member.roles.cache.has(BOOSTER_ROLE_ID)) {
               xpToAward *= 2;
           }
 
-          // Add XP and check for level up
           await addXP(member, xpToAward, message);
           xpCooldown.set(userId, now + XP_COOLDOWN_MS);
       }
@@ -1171,7 +1115,6 @@ client.on('messageCreate', async (message) => {
   if (lowerContent.startsWith('?afk')) {
       const reason = content.slice(4).trim() || 'I am currently away.';
       
-      // AFK reason also gets checked by the AI filter
       const { isToxic } = await checkMessageToxicity(reason);
       if (isToxic) {
           await message.delete().catch(() => {});
@@ -1204,7 +1147,6 @@ client.on('messageCreate', async (message) => {
       await message.delete().catch(() => {});
       try {
         if (member && member.manageable) {
-            // Severe word triggers 60m timeout
             await member.timeout(60 * 60 * 1000, `Manual Severe Word Detected: ${manualFilter.matchedWord}`); 
         }
         const log = client.channels.cache.get(LOG_CHANNEL_ID);
