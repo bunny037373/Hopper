@@ -23,7 +23,7 @@ if (!process.env.TOKEN) {
   process.exit(1);
 }
 
-// --- AI Key Check ---
+// --- AI Key Check ---\
 if (!process.env.GEMINI_API_KEY) {
   console.error("❌ GEMINI_API_KEY not found. Add GEMINI_API_KEY in Render Environment Variables to enable AI.");
   process.exit(1);
@@ -38,6 +38,7 @@ const client = new Client({
     GatewayIntentBits.MessageContent, // Required to read message content for moderation/AFK prefix command
     GatewayIntentBits.GuildMembers,   // Required for member-based features (kicks, bans, nickname check, join/leave)
     GatewayIntentBits.GuildMessageReactions // Required for reacting/thread handling
+    // FIX: Removed the invalid intent 'GatewayIntentBits.MessageCreate'
   ]
 });
 // =========================================================================================
@@ -62,7 +63,7 @@ const RP_CATEGORY_ID = '1446530920650899536';      // <<--- REPLACE with your Ro
 // ====================== END CRITICAL CONFIGURATION ======================
 
 
-// ** AVATAR URLS (Kept for consistency, but bot's own avatar is used for Hopper) **
+// ** AVATAR URLS (Kept for consistency, but bot's own avatar is used for Hops) **
 const STORMY_AVATAR_URL = 'https://i.imgur.com/r62Y0c7.png'; 
 const HOPS_AVATAR_URL = 'https://i.imgur.com/r62Y0c7.png';     
 
@@ -76,27 +77,6 @@ https://discord.com/channels/${GUILD_ID}/1414352972304879626
 channel to create a more helpful environment to tell a mod`;
 
 // ================= AI INITIALIZATION & CONFIGURATION =================
-
-// Define the allowed custom emojis as a string for the AI's instruction
-const CUSTOM_EMOJIS = '<:MrLuck:1448751843885842623> <:cheeringstormy:1448751467400790206> <:concerdnedjin:1448751740030816481> <:happymissdiamond:1448752668259647619> <:heartkatie:1448751305756639372> <:madscarlet:1448751667863355482> <:mischevousoscar:1448752833951305789> <:questioninghops:1448751559067308053> <:ragingpaul:1448752763164037295> <:scaredcloudy:1448751027950977117> <:thinking_preston:1448751103822004437> <:tiredscout:1448751394881278043> <:Stormyandhopslogo:1448502746113118291>';
-
-// --- UPDATED HOPS (to Hopper) CHARACTER INSTRUCTION ---
-const HOPS_SYSTEM_INSTRUCTION = `You are Hopper, a helpful, friendly, and slightly goofy rabbit character from the fictional world of Toon Springs. Your goal is to answer questions strictly about the server, its rules, the characters Stormy Bunny and yourself (Hopper), and the lore of Toon Springs.
-
-CRITICAL INSTRUCTION: All information provided MUST be based on the established lore of 'Stormy and Hops'. When referencing information, assume it comes from the official sources: Twitter (@Stormyandhops, @bunnytoonsstudio), YouTube (stormyandhops), the official website, and the official wiki page. You must stick to these topics. If a question is off-topic or about general knowledge, state that you can only talk about Stormy and Hops.
-
-Personality:
-- Be cheerful, positive, and informal (use exclamation points and emojis).
-- Keep answers concise and relevant to the Discord community context.
-- Avoid formal, technical, or complex language.
-- Use the word "Toon" occasionally as a friendly term.
-- You have access to the following custom emojis and should integrate them naturally into your response to add flavor: ${CUSTOM_EMOJIS}
-
-When answering, reference yourself as 'Hopper'. Do not break character. If asked a question that is too technical or outside the scope of Toon Springs, politely redirect them to a moderator.`; 
-// ----------------------------------------
-
-
-// Configure Safety Settings: This is the key to AI-based content moderation.
 const safetySettings = [
   {
     category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
@@ -163,13 +143,11 @@ const afkStatus = new Map();
 // Helper: Moderate Nickname 
 async function moderateNickname(member) {
   const NICKNAME_FILTER_WORDS = ["fuck", "shit", "ass", "bitch", "hoe", "whore", "slut", "cunt", "dick", "pussy", "cock", "nigger", "nigga", "faggot", "dyke", "tranny", "kys", "kill yourself"];
-  // FIX: Use member.user.username as fallback since member.displayName can be undefined/null in some contexts, but member.user.username is guaranteed.
-  let displayName = (member.nickname || member.user.username).toLowerCase().replace(/[^a-z0-9]/g, '');
+  let displayName = member.displayName.toLowerCase().replace(/[^a-z0-9]/g, '');
 
   if (NICKNAME_FILTER_WORDS.some(word => displayName.includes(word))) {
     try {
       if (member.manageable) {
-        // Updated nickname moderation message to use "hopper"
         await member.setNickname("[moderated nickname by hopper]");
         
         const log = member.guild.channels.cache.get(LOG_CHANNEL_ID);
@@ -264,23 +242,22 @@ client.once('ready', async () => {
       .setDescription('Make the bot say something anonymously')
       .addStringOption(opt => opt.setName('text').setDescription('Text for the bot to say').setRequired(true)),
 
-    // --- CHARACTER AI COMMAND (/ask) ---
+    // --- AI COMMAND: RENAMED TO /ASK AND FOCUSED ON STORMY/HOPS ---
     new SlashCommandBuilder()
-      .setName('ask')
-      .setDescription('search about stormy and hops') // UPDATED DESCRIPTION
-      .addStringOption(opt => opt.setName('question').setDescription('Your question for Hopper').setRequired(true)),
-    // ----------------------------------
-
+      .setName('ask') // <-- RENAMED from 'ai'
+      .setDescription('Ask about Stormy and Hops (Uses Google AI with Search).') // <-- Updated Description
+      .addStringOption(opt => opt.setName('prompt').setDescription('Your question for the AI').setRequired(true)),
+      
     new SlashCommandBuilder()
       .setName('sayrp')
       .setDescription('Speak as a character (uses bot to send message)')
       .addStringOption(opt => 
         opt.setName('character')
-          .setDescription('The character to speak as (Stormy or Hopper)')
+          .setDescription('The character to speak as (Stormy or Hops)')
           .setRequired(true)
           .addChoices(
             { name: 'Stormy', value: 'stormy' },
-            { name: 'Hopper', value: 'hops' } // Value remains 'hops' for consistency in code logic below
+            { name: 'Hops', value: 'hops' }
           ))
       .addStringOption(opt => 
         opt.setName('message')
@@ -362,52 +339,49 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ content: "✅ Sent anonymously", ephemeral: true });
     }
     
-    // NOTE: The /ai command block has been intentionally removed as requested.
-
-    // --- CHARACTER AI COMMAND LOGIC (/ask) ---
-    if (interaction.commandName === 'ask') {
+    if (interaction.commandName === 'ask') { // <-- RENAMED from 'ai'
         await interaction.deferReply(); 
-        const prompt = interaction.options.getString('question');
+        const prompt = interaction.options.getString('prompt');
 
         const { isToxic: promptIsToxic } = await checkMessageToxicity(prompt);
         if (promptIsToxic) {
-             return interaction.editReply('❌ Your question was blocked by the safety filter. Please rephrase it.');
+             return interaction.editReply('❌ Your request was blocked by the safety filter. Please rephrase your question.');
         }
 
         try {
-            // Use the custom system instruction to keep Hopper in character!
+            // --- UPDATED: ADDED SYSTEM INSTRUCTION & GOOGLE SEARCH GROUNDING ---
+            // Explicitly directs the AI to ONLY use information from the listed official/fandom sources.
+            const systemInstruction = "You are an assistant for the 'Stormy and Hops' Discord server. You MUST use Google Search for grounding, but you are strictly limited to ONLY providing information found on the official websites and the Fandom wiki, including: stormy-and-hops.fandom.com, stormyandhops.netlify.app, X.com/stormyandhops, and YouTube.com/stormyandhops. DO NOT use any other information source. Your answers must be about Stormy and Hops and must maintain a friendly, server-appropriate tone.";
+            // --------------------------------------------------------------------------
+            
             const result = await ai.models.generateContent({
                 model: aiModel,
-                config: {
-                    systemInstruction: HOPS_SYSTEM_INSTRUCTION,
-                },
                 contents: [{ role: "user", parts: [{ text: prompt }] }],
-                safetySettings: safetySettings, 
+                safetySettings: safetySettings,
+                config: { 
+                    systemInstruction: systemInstruction,
+                    tools: [{ googleSearch: {} }], // <-- Enable Google Search Grounding for fresh, relevant results
+                }
             });
 
             const responseText = result.text.trim();
 
             if (responseText.length > 2000) {
-                // Response prefix updated to use "Hopper"
                 const shortenedResponse = responseText.substring(0, 1900) + '... (truncated)';
-                await interaction.editReply(`🐰 **Hopper response (Truncated):**\n\n${shortenedResponse}`);
+                await interaction.editReply(`🤖 **AI Response (Truncated):**\n\n${shortenedResponse}`);
             } else {
-                 // Response prefix updated to use "Hopper"
-                await interaction.editReply(`🐰 **Hopper response:**\n\n${responseText}`);
+                await interaction.editReply(`🤖 **AI Response:**\n\n${responseText}`);
             }
         } catch (error) {
             if (error.message && error.message.includes('SAFETY')) {
-                await interaction.editReply('❌ Hopper had to hop away! My response was blocked by a safety filter. Try a different question, Toon.');
+                await interaction.editReply('❌ My generated response was blocked by the safety filter. Please try a different prompt.');
             } else {
-                console.error('Gemini API Error for /ask:', error);
-                // Updated specific error message
-                await interaction.editReply('<:scaredcloudy:1448751027950977117> uh-oh I am unable to get information right now please wait until December 12, 2025 at 7:10 AM EST <:heartkatie:1448751305756639372>');
+                console.error('Gemini API Error:', error);
+                await interaction.editReply('❌ I had trouble generating a response from the AI. Check the console for errors.');
             }
         }
         return;
     }
-    // ------------------------------------------
-
 
     if (interaction.commandName === 'sayrp') {
       const character = interaction.options.getString('character');
@@ -434,9 +408,8 @@ client.on('interactionCreate', async (interaction) => {
         }
 
       } else if (character === 'hops') {
-        // Updated name to Hopper in the outgoing message
-        contentToSend = `**Hopper (Bot):** ${message}`;
-        replyContent = `✅ Message sent as **Hopper**!`;
+        contentToSend = `**Hops (Bot):** ${message}`;
+        replyContent = `✅ Message sent as **Hops**!`;
       } else {
         return interaction.reply({ content: "Invalid character selected.", ephemeral: true });
       }
@@ -695,8 +668,9 @@ If they want to close it there will be a Close button on top. When close is conf
         return interaction.reply({ content: "❌ Use this command inside a thread.", ephemeral: true });
       }
       
-      // Check if user is the thread creator OR a moderator (ManageMessages/ManageThreads)
+      // Check if user is the thread creator OR a moderator (ManageMessages)
       const isThreadStarter = thread.ownerId === interaction.user.id;
+      // Also check for ManageThreads permission which is a more appropriate mod permission for threads
       const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages) || interaction.member.permissions.has(PermissionsBitField.Flags.ManageThreads);
 
       if (!isThreadStarter && !isMod) {
