@@ -233,7 +233,7 @@ function filterMessageManually(text) {
     let severeMatch = checkNormalizedText(SEVERE_WORDS, normalized) || checkNormalizedText(SEVERE_WORDS, leetNormalized);
     if (severeMatch) return { isSevere: true, isMild: false, matchedWord: severeMatch };
 
-    let mildMatch = checkNormalizedText(MILD_BAD_WORDS, normalized) || checkNormalizedText(MILD_BAD_WORDS, leetNormalized);
+    let mildMatch = checkNormalizedText(MILD_BAD_WORDS, normalized) || checkNormalizedText(MILD_WORDS, leetNormalized);
     if (mildMatch) return { isSevere: false, isMild: true, matchedWord: mildMatch };
     
     return { isSevere: false, isMild: false, matchedWord: null };
@@ -1066,6 +1066,40 @@ client.on('messageCreate', async (message) => {
              const log = client.channels.cache.get(LOG_CHANNEL_ID);
              if (log) log.send(`🖼️ **Fanart Channel Rule Violation (Deleted)**\nUser: <@${message.author.id}>\nChannel: <#${TARGET_CHANNEL_ID}>\nReason: Text-only message without attachment.\nContent: ||${message.content}||`);
              return; // Stop processing the message
+        }
+        
+        // New Logic: If the message passed the text-only check, it must have an image (attachments.size > 0 or pure GIF link)
+        // If it has an image (with or without text), perform auto-reaction and post controls.
+        if (message.attachments.size > 0 || isPureGIFLink) {
+            
+            // 1. Auto-React with ✨
+            await message.react('✨').catch(e => console.error("Failed to react with ✨:", e));
+            
+            // 2. Create thread and post control buttons
+            try {
+                // Define Buttons (using existing custom IDs)
+                const threadControlRow = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('archive_thread').setLabel('Archive Post').setStyle(ButtonStyle.Secondary),
+                    new ButtonBuilder().setCustomId('edit_title').setLabel('Edit Title').setStyle(ButtonStyle.Secondary)
+                );
+                
+                // Create a thread on the message
+                const thread = await message.startThread({
+                    name: `🎨 ${message.member.displayName}'s Fanart`,
+                    autoArchiveDuration: 1440, // 24 hours
+                });
+                
+                // Send the buttons into the newly created thread
+                await thread.send({ 
+                    content: `Hello ${message.author.toString()}! This thread has been automatically created for your fanart post. Use the buttons below to manage your post's thread:\n\n*Click "Archive Post" to hide the thread.\n*Click "Edit Title" to rename the thread's title (send the new title as a message).*`, 
+                    components: [threadControlRow] 
+                });
+                
+            } catch (e) {
+                console.error("Failed to create thread and/or send buttons:", e);
+                const log = client.channels.cache.get(LOG_CHANNEL_ID);
+                if (log) log.send(`⚠️ Failed to create thread/buttons for fanart post by <@${message.author.id}>.`);
+            }
         }
     }
     // --- END NEW FANART CHANNEL RULE ---
