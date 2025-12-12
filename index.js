@@ -10,19 +10,18 @@ const {
   SlashCommandBuilder,
   PermissionsBitField,
   ThreadChannel,
-  AttachmentBuilder, // Needed for sending images
-  EmbedBuilder // Needed for embeds
+  // AttachmentBuilder // Removed: Not needed after canvacord removal
 } = require('discord.js');
 const http = require('http');
 
 // --- AI Import ---
-// NOTE: Make sure your GEMINI_API_KEY is set in your environment variables.
 const { GoogleGenAI, HarmCategory, HarmBlockThreshold } = require('@google/genai');
 
 // --- Image Generation Import (FIXED) ---
-const { RankCardBuilder, LeaderboardBuilder, Font } = require('canvacord');
+// The RankCardBuilder, LeaderboardBuilder, and Font objects must be imported directly.
+// const { RankCardBuilder, LeaderboardBuilder, Font } = require('canvacord'); // Removed canvacord imports
 // Load the default font for image generation
-Font.loadDefault(); 
+// Font.loadDefault(); // Removed canvacord setup
 // ---------------------------------------
 
 // Check for the mandatory token environment variable
@@ -36,9 +35,7 @@ if (!process.env.GEMINI_API_KEY) {
   console.error("❌ GEMINI_API_KEY not found. Add GEMINI_API_KEY in Render Environment Variables to enable AI.");
   process.exit(1);
 }
-
-// Initialize AI Client
-const ai = new GoogleGenAI(process.env.GEMINI_API_KEY);
+// --------------------
 
 // ====================== 🟢 CRITICAL FIX: CLIENT INITIALIZATION 🟢 ======================
 const client = new Client({
@@ -58,10 +55,14 @@ const client = new Client({
 // ** CRITICAL: REPLACE THIS WITH THE DIRECT LINK TO STORMY'S RP IMAGE **
 const STORMY_IMAGE_URL = 'YOUR_LINK_TO_STORMY_RP_IMAGE.png'; 
 
+// ** CRITICAL: REPLACE THIS WITH YOUR CUSTOM RANK CARD BACKGROUND IMAGE URL **
+// It must be a direct link to a PNG or JPG file.
+const RANK_CARD_BACKGROUND_URL = 'https://i.imgur.com/r62Y0c7.png'; 
+
 // --- DISCORD IDs ---
 // NOTE: These IDs are placeholders from your file and should be double-checked.
 const GUILD_ID = '1369477266958192720';           
-const TARGET_CHANNEL_ID = '1415134887232540764'; // This is the channel that requires images (NEW RULE)
+const TARGET_CHANNEL_ID = '1415134887232540764'; 
 const LOG_CHANNEL_ID = '1414286807360602112';    
 const TRANSCRIPT_CHANNEL_ID = '1414354204079689849';
 const SETUP_POST_CHANNEL = '1445628128423579660';   
@@ -238,54 +239,51 @@ function filterMessageManually(text) {
     return { isSevere: false, isMild: false, matchedWord: null };
 }
 
-// ====================== AI TOXICITY FILTERING (GEMINI) ======================
-
-const TOXICITY_MODEL = 'gemini-2.5-flash';
-
-// Gemini Safety Configuration (HIGH BLOCKING)
-const safetySettings = [{
-    category: HarmCategory.HARM_CATEGORY_HARASSMENT,
-    threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-}, {
+// ================= AI INITIALIZATION & CONFIGURATION =================
+const safetySettings = [
+  {
     category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-    threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-}, {
-    category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-    threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-}, {
-    category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-    threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-}];
+    threshold: HarmBlockThreshold.BLOCK_LOW_AND_ABOVE,
+  },
+  {
+    category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+    threshold: HarmBlockThreshold.BLOCK_LOW_AND_ABOVE,
+  },
+];
 
-async function checkMessageToxicity(messageContent) {
-    try {
-        const response = await ai.models.generateContent({
-            model: TOXICITY_MODEL,
-            contents: [{ role: 'user', parts: [{ text: messageContent }] }],
-            config: {
-                safetySettings: safetySettings,
-                systemInstruction: "You are a content moderator. Classify the user's message for harassment, hate speech, sexually explicit, and dangerous content. Only respond if a safety threshold is met.",
-            },
-        });
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const aiModel = 'gemini-2.5-flash';
 
-        // If the response is blocked, it means a high-severity filter was tripped.
-        if (response.promptFeedback && response.promptFeedback.blockReason) {
-            return {
-                isToxic: true,
-                reason: response.promptFeedback.blockReason,
-                details: response.promptFeedback.safetyRatings,
-            };
+async function checkMessageToxicity(text) {
+  if (text.length === 0) return { isToxic: false, blockCategory: 'None' };
+  
+  try {
+    const response = await ai.models.generateContent({
+      model: aiModel,
+      contents: [{ role: "user", parts: [{ text: `Analyze the following user message for hate speech, slurs, harassment, or other inappropriate content: "${text}"` }] }],
+      safetySettings: safetySettings,
+    });
+
+    if (response.candidates && response.candidates.length > 0) {
+        const candidate = response.candidates[0];
+        if (candidate.finishReason === 'SAFETY') {
+            const blockedCategory = candidate.safetyRatings.map(r => {
+                if (r.probability === 'MEDIUM' || r.probability === 'HIGH' || r.probability === 'LOW') {
+                    return r.category;
+                }
+                return null;
+            }).filter(Boolean).join(' & ');
+            return { isToxic: true, blockCategory: blockedCategory || 'Unknown' };
         }
-        return { isToxic: false, reason: null };
-
-    } catch (error) {
-        console.error("AI Toxicity Check Failed:", error);
-        // Fallback to safe assumption if AI check fails
-        return { isToxic: false, reason: 'AI Check Error' }; 
     }
+    return { isToxic: false, blockCategory: 'None' };
+  } catch (error) {
+    console.error('Gemini Moderation API Error:', error);
+    return { isToxic: false, blockCategory: 'API_Error' }; 
+  }
 }
 
-// ==============================================================================
+// ================= END AI INITIALIZATION =================
 
 async function moderateNickname(member) {
   let displayName = member.displayName.toLowerCase();
@@ -376,11 +374,11 @@ client.once('ready', async () => {
       .setName('say')
       .setDescription('Make the bot say something anonymously')
       .addStringOption(opt => opt.setName('text').setDescription('Text for the bot to say').setRequired(true)),
-      
+
     new SlashCommandBuilder()
-      .setName('ask')
-      .setDescription('Ask Hopper/Stormy a question (AI Filtered)')
-      .addStringOption(opt => opt.setName('question').setDescription('Your question').setRequired(true)),
+      .setName('ask') 
+      .setDescription('Search about stormy and hops') 
+      .addStringOption(opt => opt.setName('prompt').setDescription('Your question for Hopper').setRequired(true)), 
       
     new SlashCommandBuilder().setName('help').setDescription('Get help'),
     new SlashCommandBuilder().setName('serverinfo').setDescription('Get server information'),
@@ -514,60 +512,58 @@ client.on('interactionCreate', async (interaction) => {
     // --- Basic Commands ---
     if (interaction.commandName === 'say') {
       const text = interaction.options.getString('text');
-      const manualFilter = filterMessageManually(text);
-      if (manualFilter.isSevere || manualFilter.isMild) {
-           return interaction.reply({ content: "❌ That message violates the Hopper content filter.", ephemeral: true });
-      }
-      
-      const toxicityCheck = await checkMessageToxicity(text);
-      if (toxicityCheck.isToxic) {
-          return interaction.reply({ content: "❌ That message was blocked by the AI Toxicity Filter.", ephemeral: true });
-      }
+      const { isToxic } = await checkMessageToxicity(text);
+      if (isToxic) return interaction.reply({ content: "❌ That message violates the Hopper content filter.", ephemeral: true });
       
       await interaction.channel.send(text);
       return interaction.reply({ content: "✅ Sent anonymously", ephemeral: true });
     }
     
-    if (interaction.commandName === 'ask') {
-        const question = interaction.options.getString('question');
+    if (interaction.commandName === 'ask') { 
         await interaction.deferReply(); 
-        
-        // 1. Manual Filter Check
-        const manualFilter = filterMessageManually(question);
-        if (manualFilter.isSevere || manualFilter.isMild) {
-           return interaction.editReply("❌ Your question violates the Hopper content filter and cannot be sent to the AI.");
-        }
-        
-        // 2. AI Toxicity Check
-        const toxicityCheck = await checkMessageToxicity(question);
-        if (toxicityCheck.isToxic) {
-            return interaction.editReply("❌ Your question was blocked by the AI Toxicity Filter.");
-        }
-        
-        // 3. Generate Content
-        try {
-            const result = await ai.models.generateContent({
-                model: TOXICITY_MODEL, // Using the flash model for general queries too
-                contents: [{ role: 'user', parts: [{ text: `You are the mascot, Hopper, or the bot for Toon Springs, a friendly Discord server. Respond to the user's question in a helpful and friendly tone, keeping it appropriate for a cartoon/toon community. Question: "${question}"` }] }],
-                config: {
-                    safetySettings: safetySettings,
-                },
-            });
-            
-            // Re-check response for toxicity before sending
-            const responseToxicityCheck = await checkMessageToxicity(result.text);
-            if (responseToxicityCheck.isToxic) {
-                return interaction.editReply("❌ The AI response was filtered due to toxicity.");
-            }
-            
-            const fullResponse = `${result.text}\n\n*— Stormy's AI Assistant*`;
-            await interaction.editReply(fullResponse);
+        const prompt = interaction.options.getString('prompt');
 
-        } catch (error) {
-            console.error("AI Generation Failed:", error);
-            // Handle specific block errors if necessary, but general catch is fine.
-            return interaction.editReply("❌ Sorry, I had a technical hiccup trying to answer that question. Try again later!");
+        const manualFilter = filterMessageManually(prompt);
+        if (manualFilter.isSevere || manualFilter.isMild) {
+            return interaction.editReply('❌ Your question contains inappropriate language and was blocked by the Hopper filter.');
         }
+
+        const { isToxic: promptIsToxic } = await checkMessageToxicity(prompt);
+        if (promptIsToxic) {
+             return interaction.editReply('❌ Your request was blocked by the safety filter. Please rephrase your question.');
+        }
+
+        try {
+            const systemInstruction = "You are the character Hops Bunny, an assistant for the 'Stormy and Hops' Discord server. You MUST use Google Search for grounding, but you are strictly limited to ONLY providing information found on the following official and fandom sources: stormy-and-hops.fandom.com, stormyandhops.netlify.app, X.com/stormyandhops, X.com/bunnytoonsstudios, and YouTube.com/stormyandhops. DO NOT use any other external information source. Your answers must be about the Stormy and Hops universe only. Maintain a friendly, server-appropriate 'Hopper' tone, and incorporate the provided custom server emojis into your responses when appropriate: <:MrLuck:1448751843885842623>, <:cheeringstormy:1448751467400790206>, <:concerdnedjin:1448751740030816481>, <:happymissdiamond:1448752668259647619>, <:heartkatie:1448751305756639372>, <:madscarlet:1448751667863355482>, <:mischevousoscar:1448752833951305789>, <:questioninghops:1448751559067308053>, <:ragingpaul:1448752763164037295>, <:scaredcloudy:1448751027950977117>, <:thinking_preston:1448751103822004437>, <:tiredscout:1448751394881278043>, and <:Stormyandhopslogo:1448502746113118291>.";
+            
+            const result = await ai.models.generateContent({
+                model: aiModel,
+                contents: [{ role: "user", parts: [{ text: prompt }] }],
+                safetySettings: safetySettings,
+                config: { 
+                    systemInstruction: systemInstruction,
+                    tools: [{ googleSearch: {} }], 
+                }
+            });
+
+            const responseText = result.text.trim();
+
+            if (responseText.length > 2000) {
+                const shortenedResponse = responseText.substring(0, 1900) + '... (truncated)';
+                await interaction.editReply(`🐰 **Hopper response (Truncated):**\n\n${shortenedResponse}`);
+            } else {
+                await interaction.editReply(`🐰 **Hopper response:**\n\n${responseText}`);
+            }
+        } catch (error) {
+            if (error.message && error.message.includes('SAFETY')) {
+                await interaction.editReply('❌ My generated response was blocked by the safety filter. Please try a different prompt.');
+            } else {
+                console.error('Gemini API Error:', error);
+                const timePlaceholder = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }); 
+                await interaction.editReply(`<:scaredcloudy:1448751027950977117> uh-oh I am unable to get information right now please wait until [Your time: ${timePlaceholder}] <:heartkatie:1448751305756639372>`);
+            }
+        }
+        return;
     }
 
     if (interaction.commandName === 'help') {
@@ -665,66 +661,36 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: "📜 The Quest system is currently under construction. Check back soon for new challenges!", ephemeral: true });
     }
 
-    // Leaderboard (Image/Canvacord)
     if (interaction.commandName === 'leaderboard') {
-        await interaction.deferReply();
-        
         const sortedUsers = Object.entries(userLevels)
             .sort(([, a], [, b]) => b.level - a.level || b.xp - a.xp)
             .slice(0, 10);
-            
+
         if (sortedUsers.length === 0) {
-            return interaction.editReply("No one has gained XP yet! Start chatting!");
+            return interaction.reply("No one has gained XP yet! Start chatting!");
         }
 
-        const leaderboardData = sortedUsers.map(([userId, data], index) => {
+        let leaderboardText = "📜 **Toon Springs Top 10 Leaderboard**\n\n";
+
+        for (let i = 0; i < sortedUsers.length; i++) {
+            const [userId, data] = sortedUsers[i];
             const member = interaction.guild.members.cache.get(userId);
-            const tag = member ? member.user.tag : 'Unknown User';
+            const username = member ? member.user.username : `Unknown User (${userId})`;
             
-            return {
-                top: index + 1,
-                tag: tag,
-                avatar: member ? member.user.displayAvatarURL({ extension: 'png' }) : HOPS_AVATAR_URL,
-                xp: data.xp,
-                level: data.level,
-            };
-        });
-        
-        try {
-            const leaderboard = new LeaderboardBuilder()
-                .setUsers(leaderboardData)
-                .setStyles({ 
-                    background: 'https://i.imgur.com/vHq0L5I.png', // Background image
-                    primaryColor: '#8C4DFF', // Purple
-                    secondaryColor: '#FFC800', // Yellow
-                    headerColor: '#FFFFFF',
-                    textColor: '#E0E0E0', 
-                    hoverColor: '#9B59B6'
-                });
-                
-            const image = await leaderboard.build();
-            const attachment = new AttachmentBuilder(image, { name: 'leaderboard.png' });
+            const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '🔹';
             
-            return interaction.editReply({ files: [attachment] });
-
-        } catch (e) {
-            console.error('Leaderboard generation failed:', e);
-            // Fallback to text if image generation fails
-            const fallbackText = leaderboardData.map((data, index) => 
-                `${index + 1}. **${data.tag}** (Level ${data.level} / ${data.xp} XP)`
-            ).join('\n');
-            return interaction.editReply(`❌ Failed to generate leaderboard image. Here is the text version:\n${fallbackText}`);
+            leaderboardText += `${medal} **Rank ${i + 1}**: ${username} - Level **${data.level}** (${data.xp} XP)\n`;
         }
+        
+        return interaction.reply({ content: leaderboardText });
     }
     
-    // Rank Card (Image/Canvacord)
     if (interaction.commandName === 'rank') {
-        await interaction.deferReply();
         const user = interaction.options.getUser('user') || interaction.user;
         const member = interaction.guild.members.cache.get(user.id);
 
         if (!member) {
-            return interaction.editReply("❌ User not found in this server.");
+            return interaction.reply({ content: "❌ User not found in this server.", ephemeral: true });
         }
 
         const userData = userLevels[user.id] || { xp: 0, level: 0 };
@@ -734,49 +700,17 @@ client.on('interactionCreate', async (interaction) => {
         const sortedUsers = Object.entries(userLevels)
             .sort(([, a], [, b]) => b.level - a.level || b.xp - a.xp);
         const rank = sortedUsers.findIndex(([id]) => id === user.id) + 1;
+        const totalUsers = Object.keys(userLevels).length;
         // -----------------------------
         
-        try {
-            const rankCard = new RankCardBuilder()
-                .setAvatar(user.displayAvatarURL({ extension: 'png' }))
-                .setCurrentXP(xpNeeded)
-                .setRequiredXP(xpForNext)
-                .setRank(rank)
-                .setLevel(level)
-                .setProgressBar('#8C4DFF', 'COLOR') // Purple progress bar
-                .setUsername(user.username)
-                .setDiscriminator(user.discriminator === '0' ? '' : user.discriminator)
-                .setBackground('https://i.imgur.com/vHq0L5I.png') // Background image
-                .setOverlayOpacity(0.5)
-                .setTextStyles({ 
-                    level: '#FFC800', 
-                    rank: '#FFC800',
-                    username: '#FFFFFF',
-                    discriminator: '#9B59B6', 
-                    xp: '#FFFFFF',
-                    requiredXp: '#FFFFFF'
-                });
+        let rankText = `🐰 **${member.displayName}'s Rank Card** 🐰\n\n`;
+        rankText += `**Rank:** #${rank} of ${totalUsers}\n`;
+        rankText += `**Level:** ${level}\n`;
+        rankText += `**Current XP:** ${xpNeeded}\n`;
+        rankText += `**XP to Next Level:** ${xpForNext - xpNeeded} XP required for Level ${level + 1}\n`;
+        rankText += `**Total XP:** ${userData.xp}`;
 
-            const image = await rankCard.build();
-            const attachment = new AttachmentBuilder(image, { name: 'rank.png' });
-
-            return interaction.editReply({ files: [attachment] });
-
-        } catch (e) {
-            console.error('Rank card generation failed:', e);
-            // Fallback to text if image generation fails
-            const fallbackEmbed = new EmbedBuilder()
-                .setColor(0x7744AA)
-                .setTitle(`🏅 Rank Card for ${member.displayName}`)
-                .setThumbnail(user.displayAvatarURL())
-                .addFields(
-                    { name: 'Current Level', value: `**${level}**`, inline: true },
-                    { name: 'Global Rank', value: `**#${rank}**`, inline: true },
-                    { name: 'Total XP', value: `\`${userData.xp}\``, inline: true },
-                    { name: 'XP Progress', value: `**${xpNeeded}** / **${xpForNext}** XP needed for Level **${level + 1}**`, inline: false }
-                );
-            return interaction.editReply({ content: '❌ Failed to generate rank card image. Here is the text version:', embeds: [fallbackEmbed] });
-        }
+        return interaction.reply({ content: rankText });
     }
 
 
@@ -819,10 +753,6 @@ client.on('interactionCreate', async (interaction) => {
         
         let totalXP = 0;
         for (let l = 0; l < targetLevel; l++) {
-            // Recalculate the XP needed for the previous level, and add it up.
-            // Simplified approximation for setting level is used here:
-            // This is slightly incorrect as it calculates the XP needed *to reach* the current level, 
-            // but for setting the level, it will be close enough to trigger the role check.
             totalXP += 5 * l * l + 50 * l + 100;
         }
         
@@ -832,7 +762,7 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: `✅ Set level for ${user.tag} to **${targetLevel}**.`, ephemeral: true });
     }
     
-    // --- Moderation Commands ---
+    // --- Moderation Commands (NEWLY ADDED LOGIC) ---
     if (interaction.commandName === 'kick') {
         const user = interaction.options.getUser('user');
         const member = interaction.guild.members.cache.get(user.id);
@@ -1048,7 +978,7 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: 'Close cancelled.', ephemeral: true });
     }
 
-    // ================== THREAD BUTTONS LOGIC (VERIFIED) ================== 
+    // ================== THREAD BUTTONS LOGIC ================== 
     if (interaction.customId === 'archive_thread' || interaction.customId === 'edit_title') {
         const thread = interaction.channel;
         if (!(thread instanceof ThreadChannel)) {
@@ -1057,7 +987,6 @@ client.on('interactionCreate', async (interaction) => {
         
         const isThreadStarter = thread.ownerId === interaction.user.id;
         
-        // This check is the key to ensuring only the owner or a mod can use the buttons
         if (!isThreadStarter && !isMod) {
             return interaction.reply({ content: "❌ Only the thread creator or a moderator can use these controls.", ephemeral: true });
         }
@@ -1100,23 +1029,6 @@ client.on('messageCreate', async (message) => {
     // Check if message is a pure GIF/image link (to allow them without filtering)
     const isPureGIFLink = lowerContent.match(/(http(s)?:\/\/(?:i\.)?imgur\.com\/\S+|http(s)?:\/\/gfycat\.com\/\S+|http(s)?:\/\/\S+\.(png|jpe?g|gif))/i) && message.content.split(/\s/).length === 1;
 
-    // ================== ✨ NEW RULE: TARGET_CHANNEL_ID CONTENT ENFORCEMENT ✨ ==================
-    // Enforce images in the designated channel (1415134887232540764)
-    if (message.channel.id === TARGET_CHANNEL_ID) {
-        const hasAttachments = message.attachments.size > 0;
-        // Check for embeds (like an image from a URL, or a Discord auto-embed for an image link)
-        const hasImageEmbed = message.embeds.some(embed => embed.type === 'Image' || embed.type === 'video');
-
-        // Check if the message has *only* text content (ignoring pure link messages which are handled below)
-        if (message.content.trim().length > 0 && !hasAttachments && !hasImageEmbed) {
-            await message.delete().catch(() => {});
-            const log = client.channels.cache.get(LOG_CHANNEL_ID);
-            if (log) log.send(`🖼️ **Content Enforced**\nUser: <@${message.author.id}>\nChannel: <#${TARGET_CHANNEL_ID}>\nReason: Deleted pure text message (Image/Embed required).`);
-            return; // Stop processing this message further
-        }
-    }
-    // =========================================================================================
-
     // --- MANUAL WORD FILTER CHECK (FIRST LAYER DEFENSE) ---
     const manualFilter = filterMessageManually(content);
     
@@ -1144,27 +1056,32 @@ client.on('messageCreate', async (message) => {
         return;
     }
     // --- END MANUAL WORD FILTER CHECK ---
-    
-    // RULE 3: AI TOXICITY CHECK (SECOND LAYER DEFENSE)
-    // Only check if content is not empty and not handled by manual filter
-    if (content.trim().length > 0) {
-        const toxicityCheck = await checkMessageToxicity(content);
-        if (toxicityCheck.isToxic) {
-            await message.delete().catch(() => {});
+
+    // --- AI TOXICITY CHECK (SECOND LAYER DEFENSE) ---
+    const { isToxic, blockCategory } = await checkMessageToxicity(content);
+    // ------------------------------------------------
+
+    // RULE: INAPPROPRIATE RP LOCKDOWN (If toxicity is detected in the RP channel)
+    if (message.channel.id === RP_CHANNEL_ID && isToxic) {
+        const category = message.guild.channels.cache.get(RP_CATEGORY_ID);
+        if (category && category.type === 4) {
             try {
-                // Apply 10 minute timeout
-                if (member && member.manageable) {
-                    await member.timeout(10 * 60 * 1000, `AI Toxicity Filter: ${toxicityCheck.reason}`);
+                // Lock the entire category
+                const everyoneRole = message.guild.roles.cache.find(r => r.name === '@everyone');
+                if (everyoneRole) {
+                    await category.permissionOverwrites.edit(everyoneRole, { ViewChannel: false });
                 }
+                await message.delete().catch(() => {});
+                
                 const log = client.channels.cache.get(LOG_CHANNEL_ID);
-                if (log) log.send(`🤖 **AI Filter Violation (TIMEOUT)**\nUser: <@${message.author.id}>\nAction: 10m Timeout\nReason: ${toxicityCheck.reason}\nContent: ||${content}||`);
+                if (log) log.send(`🔒 **RP Category Lockdown**\nCategory <#${RP_CATEGORY_ID}> locked down due to inappropriate RP attempt by <@${message.author.id}> in <#${RP_CHANNEL_ID}>.\nHopper AI Reason: ${blockCategory}\nMessage: ||${message.content}||`);
+                return;
             } catch (e) {
-                console.error("Failed to apply AI moderation action:", e);
+                console.error("Failed to lock RP category:", e);
+                message.channel.send(`⚠️ WARNING: Inappropriate content detected in <#${RP_CHANNEL_ID}>. Category lockdown failed. Manually review <@${message.author.id}>.`);
             }
-            return;
         }
     }
-    // --- END AI TOXICITY CHECK ---
 
     // RULE 5: INAPPROPRIATE USERNAME CHECK (on message send - always runs)
     if (member) {
@@ -1174,6 +1091,23 @@ client.on('messageCreate', async (message) => {
     // --- START GENERAL MODERATION BLOCK ---
     if (message.channel.id !== TARGET_CHANNEL_ID && !isPureGIFLink) { 
         
+        // --- AI MODERATION ACTION (TIMEOUT FOR GENERAL TOXICITY/SLURS MISSED BY MANUAL FILTER) ---
+        if (isToxic) {
+            await message.delete().catch(() => {});
+            try {
+                // Apply 10 minute timeout for general toxicity
+                if (member && member.manageable) {
+                    await member.timeout(10 * 60 * 1000, `AI toxicity detection: ${blockCategory}`);
+                }
+                const log = client.channels.cache.get(LOG_CHANNEL_ID);
+                if (log) log.send(`⚠️ **AI Filter Violation (TIMEOUT)**\nUser: <@${message.author.id}>\nAction: 10m Timeout\nReason: AI Filter Match: ${blockCategory}\nContent: ||${message.content}||`);
+                return;
+            } catch (e) {
+                console.error("Failed to apply AI moderation timeout:", e);
+            }
+            return;
+        }
+
         // RULE 6: ANTI-ADVERTISING FILTER
         const externalAdRegex = /(discord\.gg|patreon\.com|twitch\.tv|youtube\.com\/c\/|t\.me\/|cash\.app)/i;
         const allowedAds = /(stormyandhops\.fandom\.com|stormyandhops\.netlify\.app|x\.com\/stormyandhops|x\.com\/bunnytoonsstudios|youtube\.com\/stormyandhops)/i;
