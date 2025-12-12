@@ -9,7 +9,8 @@
   "dependencies": {
     "discord.js": "^14.14.1",
     "http": "^0.0.1-security",
-    "@google/genai": "latest" 
+    "@google/genai": "latest",
+    "canvacord": "^5.4.8"
   },
   "keywords": [
     "discord",
