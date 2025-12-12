@@ -62,13 +62,21 @@ and for more assistance please use
 https://discord.com/channels/${GUILD_ID}/1414352972304879626
 channel to create a more helpful environment to tell a mod`;
 
+
 // --- ADDED CONSTANTS FOR AI ---
 // Note: Midnight PT (Gemini API reset time) is 3:00 AM EST.
 const RESET_TIME = '3:00 AM EST';
 
-// Fandom links added as context for the AI model to use when answering questions.
-const FANDOM_LINKS = `
-Use the following external links as knowledge resources if the user asks about these characters:
+// Fandom links + Placeholder for Official Links for AI context
+const CONTEXT_LINKS = `
+Use the following external links and information as knowledge resources:
+
+- https://youtube.com/@stormyandhops
+- https://youtube.com/@bunnytoonsstudios
+- https://stormyandhops.netlify.app/episode
+- https://stormyandhops.netlify.app/credits
+- https://stormyandhops.netlify.app/qna
+- https://stormyandhops.netlify.app/characters
 - https://stormy-and-hops.fandom.com/wiki/Stormy_Bunny
 - https://stormy-and-hops.fandom.com/wiki/Hops_Bunny
 - https://stormy-and-hops.fandom.com/wiki/Scarlet_bunny
@@ -83,6 +91,111 @@ Use the following external links as knowledge resources if the user asks about t
 - https://stormy-and-hops.fandom.com/wiki/Jin_the_panda
 `;
 // ------------------------------
+
+// ====================== STATIC MODERATION LISTS ======================
+
+// 0. ALLOWED WORDS (WHITELIST)
+const ALLOWED_WORDS = [
+  "assist", "assistance", "assistant", "associat",
+  "class", "classic", "glass", "grass", "pass", "bass", "compass",
+  "hello", "shell", "peacock", "cocktail", "babcock"
+];
+
+// 1. WORDS THAT TRIGGER MESSAGE DELETION ONLY (Common swearing)
+const MILD_BAD_WORDS = [
+  "fuck", "f*ck", "f**k", "f-ck", "fck", "fu-", "f-", "f*cking", "fucking",
+  "shit", "s*it", "s**t", "sh!t",
+  "ass", "bitch", "hoe", "whore", "slut", "cunt",
+  "dick", "pussy", "cock", "bastard", "sexy",
+];
+
+// 2. WORDS THAT TRIGGER A TIMEOUT (Slurs, threats, hate speech, extreme trolling)
+const SEVERE_WORDS = [
+  "nigger", "nigga", "niga", "faggot", "fag", "dyke", "tranny", "chink", "kike", "paki", "gook", "spic", "beaner", "coon",
+  "retard", "spastic", "mong", "autist",
+  "kys", "kill yourself", "suicide", "rape", "molest",
+  "hitler", "nazi", "kkk",
+  "joke about harassing", "troll joke", "harassment funny", "trolling funny", "trollin", "troller"
+];
+
+// Combine both lists for the general filter used for nicknames and /say checks
+const BAD_WORDS = [...MILD_BAD_WORDS, ...SEVERE_WORDS];
+
+// Map for detecting Leetspeak bypasses
+const LEET_MAP = {
+  '0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '@': 'a', '$': 's', '!': 'i', '(': 'c', '+': 't'
+};
+// ===================================================================
+
+/**
+ * Normalizes text by applying the LEET_MAP and removing non-alphanumeric characters.
+ * @param {string} text The input text.
+ * @returns {string} The normalized text.
+ */
+function processTextForFilter(text) {
+    let normalized = text.toLowerCase();
+
+    // 1. Apply Leetspeak map
+    for (const [leetChar, trueChar] of Object.entries(LEET_MAP)) {
+        normalized = normalized.split(leetChar).join(trueChar);
+    }
+
+    // 2. Remove all remaining non-alphanumeric characters (keeps letters and numbers)
+    // This is crucial for catching "f.u.c.k" or "f*u*c*k"
+    normalized = normalized.replace(/[^a-z0-9]/g, '');
+
+    return normalized;
+}
+
+/**
+ * Checks a string against the MILD_BAD_WORDS and SEVERE_WORDS lists,
+ * considering the ALLOWED_WORDS (whitelist) and Leetspeak.
+ * @param {string} text The message text to check.
+ * @returns {{isBlocked: boolean, severity: 'mild' | 'severe' | 'none', word: string}}
+ */
+function checkStaticFilter(text) {
+    if (!text) return { isBlocked: false, severity: 'none', word: '' };
+    
+    // Process the text once (lowercase + leetspeak substitution + removal of special chars)
+    const processedText = processTextForFilter(text);
+    
+    // --- 1. Check for SEVERE words (Highest Priority) ---
+    for (const severeWord of SEVERE_WORDS) {
+        // We only check if the processed text *contains* the severe word
+        if (processedText.includes(severeWord)) {
+            // Check if it's NOT part of an explicitly ALLOWED word
+            let isAllowed = false;
+            for (const allowedWord of ALLOWED_WORDS) {
+                if (processedText.includes(allowedWord) && allowedWord.includes(severeWord)) {
+                    isAllowed = true;
+                    break;
+                }
+            }
+            if (!isAllowed) {
+                return { isBlocked: true, severity: 'severe', word: severeWord };
+            }
+        }
+    }
+
+    // --- 2. Check for MILD words ---
+    for (const mildWord of MILD_BAD_WORDS) {
+        if (processedText.includes(mildWord)) {
+            // Check if it's NOT part of an explicitly ALLOWED word
+            let isAllowed = false;
+            for (const allowedWord of ALLOWED_WORDS) {
+                if (processedText.includes(allowedWord) && allowedWord.includes(mildWord)) {
+                    isAllowed = true;
+                    break;
+                }
+            }
+            if (!isAllowed) {
+                return { isBlocked: true, severity: 'mild', word: mildWord };
+            }
+        }
+    }
+
+    return { isBlocked: false, severity: 'none', word: '' };
+}
 
 // ================= AI INITIALIZATION & CONFIGURATION =================
 
@@ -153,21 +266,20 @@ async function checkMessageToxicity(text) {
 // ================= JOIN/LEAVE TRACKER =================
 const joinTracker = new Map(); 
 
-// Helper: Moderate Nickname (NOTE: This still uses a word list and is outside the AI check)
+// Helper: Moderate Nickname
 async function moderateNickname(member) {
-  // *** NOTE: For nickname moderation, we must use a static list or a dedicated 
-  // moderation API endpoint, as the Gemini model is optimized for chat/text generation.
-  // We'll use a very strict check for the nickname to minimize false positives.
-  const NICKNAME_FILTER_WORDS = ["fuck", "shit", "ass", "bitch", "hoe", "whore", "slut", "cunt", "dick", "pussy", "cock", "nigger", "nigga", "faggot", "dyke", "tranny", "kys", "kill yourself"];
-  let displayName = member.displayName.toLowerCase().replace(/[^a-z0-9]/g, '');
+  // Use the combined BAD_WORDS list for a clean nickname environment.
+  const displayName = member.displayName;
+  // Note: For nicknames, we only check for a block, as the intention is always to remove bad words from display.
+  const { isBlocked, word } = checkStaticFilter(displayName); 
 
-  if (NICKNAME_FILTER_WORDS.some(word => displayName.includes(word))) {
+  if (isBlocked) {
     try {
       if (member.manageable) {
         await member.setNickname("[moderated nickname by hopper]");
         
         const log = member.guild.channels.cache.get(LOG_CHANNEL_ID);
-        if (log) log.send(`🛡️ **Nickname Moderated**\nUser: <@${member.id}>\nOld Name: ||${member.user.username}||\nReason: Inappropriate Username (Static Filter)`);
+        if (log) log.send(`🛡️ **Nickname Moderated**\nUser: <@${member.id}>\nOld Name: ||${member.user.username}||\nReason: Inappropriate Username (Static Filter: ${word})`);
         return true; 
       }
     } catch (err) {
@@ -274,10 +386,10 @@ client.once('ready', async () => {
       .setDescription('Make the bot say something anonymously')
       .addStringOption(opt => opt.setName('text').setDescription('Text for the bot to say').setRequired(true)),
 
-    // --- NEW AI COMMAND ---
+    // --- NEW AI COMMAND (/ask) ---
     new SlashCommandBuilder()
       .setName('ask')
-      .setDescription('Ask the Google AI (Gemini) a question.')
+      .setDescription('search for anything Stormy and hops questions you want to know')
       .addStringOption(opt => opt.setName('prompt').setDescription('Your question for the AI').setRequired(true)),
     // ----------------------
       
@@ -369,6 +481,16 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.commandName === 'say') {
       const text = interaction.options.getString('text');
+      
+      // --- STATIC BAD WORD CHECK (NEW LOGIC) ---
+      const { isBlocked, severity, word } = checkStaticFilter(text);
+      if (isBlocked) {
+          const log = client.channels.cache.get(LOG_CHANNEL_ID);
+          if (log) log.send(`🚨 **Static Filter Violation (/say)**\nUser: <@${interaction.user.id}>\nContent: ||${text}||\nReason: Static bad word detected (Severity: ${severity}, Word: ${word}).`);
+          return interaction.reply({ content: `❌ That message violates the static bad word filter (word: ${word}).`, ephemeral: true });
+      }
+      // --- END STATIC BAD WORD CHECK ---
+      
       // Use AI for filter check before sending
       const { isToxic } = await checkMessageToxicity(text);
       if (isToxic) return interaction.reply({ content: "❌ That message violates the AI content filter.", ephemeral: true });
@@ -387,12 +509,12 @@ client.on('interactionCreate', async (interaction) => {
         if (lastUsed && now < lastUsed + COOLDOWN_SECONDS * 1000) {
             const remainingSeconds = Math.ceil((lastUsed + COOLDOWN_SECONDS * 1000 - now) / 1000);
             
-            // --- CUSTOM COOLDOWN MESSAGE ---
+            // --- CUSTOM COOLDOWN MESSAGE with EMOJIS ---
             return interaction.reply({ 
-                content: `:concerdnedjin: uh-oh. The search Toon is about to expire and reset until ${RESET_TIME} and after that you can use it again. You must wait **${remainingSeconds} seconds** before using \`/ask\` again.`, 
+                content: `<:scaredcloudy:1448751027950977117> uh-oh. The search Toon is about to expire and reset until ${RESET_TIME} and after that you can use it again. You must wait **${remainingSeconds} seconds** before using \`/ask\` again.`, 
                 ephemeral: true 
             });
-            // -------------------------------
+            // ---------------------------------------------
         }
         
         // Set cooldown before deferring
@@ -401,8 +523,17 @@ client.on('interactionCreate', async (interaction) => {
         // Defer the reply as AI generation can take a moment
         await interaction.deferReply(); 
         const prompt = interaction.options.getString('prompt');
+        
+        // --- STATIC BAD WORD CHECK (NEW LOGIC) ---
+        const { isBlocked: promptIsBlocked, severity: promptSeverity, word: promptWord } = checkStaticFilter(prompt);
+        if (promptIsBlocked) {
+            const log = client.channels.cache.get(LOG_CHANNEL_ID);
+            if (log) log.send(`🚨 **Static Filter Violation (/ask)**\nUser: <@${interaction.user.id}>\nPrompt: ||${prompt}||\nReason: Static bad word detected (Severity: ${promptSeverity}, Word: ${promptWord}).`);
+            return interaction.editReply(`❌ Your request was blocked by the static bad word filter (word: ${promptWord}).`);
+        }
+        // --- END STATIC BAD WORD CHECK ---
 
-        // Check the prompt for toxicity before processing it
+        // Check the prompt for AI toxicity before processing it
         const { isToxic: promptIsToxic } = await checkMessageToxicity(prompt);
         if (promptIsToxic) {
              return interaction.editReply('❌ Your request was blocked by the safety filter. Please rephrase your question.');
@@ -413,10 +544,10 @@ client.on('interactionCreate', async (interaction) => {
                 model: aiModel,
                 contents: [{ role: "user", parts: [{ text: prompt }] }],
                 // The safety settings here will block the *output* if it's unsafe.
-                safetySettings: safetySettings,
-                // ADDED: Configuration to include the fandom links in the system instruction
+                safetySettings: safetySettings, 
+                // ADDED: Configuration to include the CONTEXT_LINKS in the system instruction
                 config: {
-                    systemInstruction: `You are a helpful assistant. ${FANDOM_LINKS}`,
+                    systemInstruction: `You are a helpful assistant. ${CONTEXT_LINKS}`,
                 },
             });
 
@@ -436,8 +567,8 @@ client.on('interactionCreate', async (interaction) => {
                 await interaction.editReply('❌ My generated response was blocked by the safety filter. Please try a different prompt.');
             } else {
                 console.error('Gemini API Error:', error);
-                // REPLACED: Custom error message for API failure/quota exhaustion
-                const customErrorMessage = `:scaredcloudy: I had trouble connecting to information please wait until ${RESET_TIME} until I fully reset and you can get more information :heartkatie:`;
+                // CUSTOM ERROR MESSAGE with EMOJIS
+                const customErrorMessage = `<:scaredcloudy:1448751027950977117> I had trouble connecting to information please wait until ${RESET_TIME} until I fully reset and you can get more information <:heartkatie:1448751305756639372>`;
                 await interaction.editReply(customErrorMessage);
             }
         }
@@ -449,6 +580,15 @@ client.on('interactionCreate', async (interaction) => {
       const character = interaction.options.getString('character');
       const message = interaction.options.getString('message');
       
+      // --- STATIC BAD WORD CHECK (NEW LOGIC) ---
+      const { isBlocked, severity, word } = checkStaticFilter(message);
+      if (isBlocked) {
+          const log = client.channels.cache.get(LOG_CHANNEL_ID);
+          if (log) log.send(`🚨 **Static Filter Violation (/sayrp)**\nUser: <@${interaction.user.id}>\nContent: ||${message}||\nReason: Static bad word detected (Severity: ${severity}, Word: ${word}).`);
+          return interaction.reply({ content: `❌ That message violates the static bad word filter (word: ${word}) and cannot be sent.`, ephemeral: true });
+      }
+      // --- END STATIC BAD WORD CHECK ---
+
       // Use AI for filter check before sending
       const { isToxic } = await checkMessageToxicity(message);
       if (isToxic) return interaction.reply({ content: "❌ That message violates the AI content filter and cannot be sent.", ephemeral: true });
@@ -757,9 +897,32 @@ client.on('messageCreate', async (message) => {
                         (lowerContent.includes('tenor.com') || lowerContent.includes('giphy.com') || lowerContent.endsWith('.gif')) &&
                         message.attachments.size === 0; 
 
-  // --- AI TOXICITY CHECK ---
+  // --- STATIC BAD WORD FILTER (FIRST LINE OF DEFENSE - NEW LOGIC) ---
+  const { isBlocked, severity, word } = checkStaticFilter(content);
+
+  if (isBlocked) {
+      await message.delete().catch(() => {});
+      const log = client.channels.cache.get(LOG_CHANNEL_ID);
+      
+      if (severity === 'severe') {
+          // SEVERE: Timeout for 60 minutes
+          if (member && member.manageable) {
+              await member.timeout(60 * 60 * 1000, `Severe Static Bad Word Filter Violation: ${word}`).catch(() => {}); 
+          }
+          if (log) log.send(`🚨 **Static Filter Violation (SEVERE: Timeout 60m)**\nUser: <@${message.author.id}>\nWord: ||${word}||\nContent: ||${message.content}||\nReason: Severe bad word detected by static filter.`);
+      } else if (severity === 'mild') {
+          // MILD: Delete only
+          if (log) log.send(`⚠️ **Static Filter Violation (MILD: Deleted)**\nUser: <@${message.author.id}>\nWord: ||${word}||\nContent: ||${message.content}||\nReason: Mild bad word detected by static filter.`);
+      }
+      return; // Stop processing after static block
+  }
+  // --- END STATIC BAD WORD FILTER ---
+
+
+  // --- AI TOXICITY CHECK (Second line of defense) ---
   const { isToxic, blockCategory } = await checkMessageToxicity(content);
-  // -------------------------
+  // --------------------------------------------------
+
 
   // RULE: INAPPROPRIATE RP LOCKDOWN 
   if (message.channel.id === RP_CHANNEL_ID && isToxic) {
@@ -939,7 +1102,7 @@ client.on('messageCreate', async (message) => {
       await thread.send({ content: "Thread controls:", components: [row] });
     } catch { }
   }
-}); // <--- ADDED MISSING CLOSING PARENTHESIS AND BRACE FOR client.on('messageCreate', ...)
+});
 
 // ================= RULE 11: JOIN/LEAVE TROLLING =================
 client.on('guildMemberAdd', async (member) => {
