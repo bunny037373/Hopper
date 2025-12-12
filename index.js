@@ -18,9 +18,12 @@ const http = require('http');
 const { GoogleGenAI, HarmCategory, HarmBlockThreshold } = require('@google/genai');
 
 // --- Image Generation Import ---
-const { RankCardBuilder, LeaderboardBuilder, Font } = require('canvacord');
+// FIX: Import the main Canvacord object to reliably access static methods like Font.loadDefault()
+const Canvacord = require('canvacord'); 
+const { RankCardBuilder, LeaderboardBuilder } = Canvacord; // Keep these variables defined for the /rank and /leaderboard commands
+
 // Load the default font for image generation
-Font.loadDefault();
+Canvacord.Font.loadDefault();
 // ------------------------------
 
 // Check for the mandatory token environment variable
@@ -653,21 +656,20 @@ client.on('interactionCreate', async (interaction) => {
     }
     
     if (interaction.commandName === 'daily') {
-        const COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
+        const COOLDOWN_MS = 24 * 60 * 60 * 1000;
         const userId = interaction.user.id;
         const now = Date.now();
-        
+
         if (dailyCooldown.has(userId) && now < dailyCooldown.get(userId)) {
             const remaining = dailyCooldown.get(userId) - now;
             const hours = Math.floor(remaining / (1000 * 60 * 60));
-            const minutes = Math.floor((remaining % (1000 * 60 * 60)) / (1000 * 60));
+            const minutes = Math.ceil((remaining % (1000 * 60 * 60)) / (1000 * 60));
             return interaction.reply({ content: `❌ You can claim your daily reward in ${hours}h ${minutes}m.`, ephemeral: true });
         }
         
         const DAILY_XP = 500;
         await addXP(interaction.member, DAILY_XP);
         dailyCooldown.set(userId, now + COOLDOWN_MS);
-        
         return interaction.reply(`✅ You claimed your daily reward! You earned **${DAILY_XP} XP**! Keep hopping!`);
     }
 
@@ -676,7 +678,7 @@ client.on('interactionCreate', async (interaction) => {
         const sortedUsers = Object.entries(userLevels)
             .sort(([, a], [, b]) => b.level - a.level || b.xp - a.xp)
             .slice(0, 10);
-            
+
         if (sortedUsers.length === 0) {
             return interaction.editReply("No one has gained XP yet! Start chatting!");
         }
@@ -686,6 +688,7 @@ client.on('interactionCreate', async (interaction) => {
             const players = sortedUsers.map(([userId, data], index) => {
                 const member = interaction.guild.members.cache.get(userId);
                 const user = member ? member.user : { username: 'Unknown', displayAvatarURL: () => 'https://cdn.discordapp.com/embed/avatars/0.png' };
+                
                 return {
                     avatar: user.displayAvatarURL({ extension: 'png' }),
                     username: user.username,
@@ -698,8 +701,8 @@ client.on('interactionCreate', async (interaction) => {
 
             const lb = new LeaderboardBuilder()
                 .setHeader({
-                    title: 'Toon Springs Top 10',
-                    image: STORMY_AVATAR_URL, 
+                    title: "Toon Springs Top 10",
+                    image: STORMY_AVATAR_URL,
                     subtitle: `${Object.keys(userLevels).length} members`
                 })
                 .setPlayers(players)
@@ -707,38 +710,36 @@ client.on('interactionCreate', async (interaction) => {
 
             const data = await lb.build({ format: 'png' });
             const attachment = new AttachmentBuilder(data, { name: 'leaderboard.png' });
-
+            
             return interaction.editReply({ files: [attachment] });
 
         } catch (e) {
             console.error("Failed to generate leaderboard:", e);
             // Fallback to text leaderboard if image fails
-            let textLeaderboard = "🏆 **Hopper's Top 10 Toons!** (Image Generation Failed)\n";
-            for (let i = 0; i < sortedUsers.length; i++) {
-                const [userId, data] = sortedUsers[i];
+            let textLeaderboard = "🏆 **Hopper's Top 10** 🏆\n\n";
+            sortedUsers.forEach(([userId, data], index) => {
                 const member = interaction.guild.members.cache.get(userId);
-                const userTag = member ? member.user.username : `Unknown User (${userId})`;
-                textLeaderboard += `${i + 1}. **Level ${data.level}** - ${userTag}\n`;
-            }
+                const tag = member ? member.user.tag : 'Unknown User';
+                textLeaderboard += `#${index + 1}: ${tag} (Level ${data.level} | Total XP: ${data.xp})\n`;
+            });
             return interaction.editReply({ content: textLeaderboard });
         }
     }
     
     if (interaction.commandName === 'quest') {
-         return interaction.reply({ content: "🗺️ **Current Quest:** Help Hopper by keeping the chat fun and friendly! No specific quest is available right now, but check back later! (This feature is a placeholder and will be expanded soon!)", ephemeral: true });
+        return interaction.reply({ content: "📜 Quests are still being developed! Check back soon.", ephemeral: true });
     }
 
-    // --- XP Mod Commands Handlers ---
+    // --- XP Mod Commands ---
     if (interaction.commandName === 'givexp') {
         const user = interaction.options.getUser('user');
         const xpAmount = interaction.options.getInteger('xp');
         const member = interaction.guild.members.cache.get(user.id);
-        
+
         if (!member) return interaction.reply({ content: "❌ User not found in server.", ephemeral: true });
         if (xpAmount <= 0) return interaction.reply({ content: "❌ XP must be positive.", ephemeral: true });
-        
+
         await addXP(member, xpAmount, null);
-        
         const currentData = userLevels[user.id];
         return interaction.reply({ content: `✅ Gave **${xpAmount} XP** to ${user.tag}. New Level: **${currentData.level}** (Total XP: ${currentData.xp}).`, ephemeral: true });
     }
@@ -747,21 +748,19 @@ client.on('interactionCreate', async (interaction) => {
         const user = interaction.options.getUser('user');
         const xpAmount = interaction.options.getInteger('xp');
         const member = interaction.guild.members.cache.get(user.id);
-        
+
         if (!member) return interaction.reply({ content: "❌ User not found in server.", ephemeral: true });
         if (xpAmount <= 0) return interaction.reply({ content: "❌ XP must be positive.", ephemeral: true });
-
         if (!userLevels[user.id]) userLevels[user.id] = { xp: 0, level: 0 };
-        
+
         userLevels[user.id].xp = Math.max(0, userLevels[user.id].xp - xpAmount);
         const { level } = calculateLevel(userLevels[user.id].xp);
-        userLevels[user.id].level = level; 
-        
+        userLevels[user.id].level = level;
         await handleLevelRoles(member, level);
-
+        
         return interaction.reply({ content: `✅ Took away **${xpAmount} XP** from ${user.tag}. New Level: **${level}** (Total XP: ${userLevels[user.id].xp}).`, ephemeral: true });
     }
-    
+
     if (interaction.commandName === 'changelevel') {
         const user = interaction.options.getUser('user');
         let targetLevel = interaction.options.getInteger('level');
@@ -771,474 +770,371 @@ client.on('interactionCreate', async (interaction) => {
         if (targetLevel < 0) targetLevel = 0;
 
         let totalXP = 0;
+        // Calculate the total XP needed to reach the start of the target level
         for (let l = 0; l < targetLevel; l++) {
-             totalXP += 5 * l * l + 50 * l + 100;
+            totalXP += 5 * l * l + 50 * l + 100;
         }
 
         userLevels[user.id] = { xp: totalXP, level: targetLevel };
-        
         await handleLevelRoles(member, targetLevel);
 
         return interaction.reply({ content: `✅ Set level for ${user.tag} to **${targetLevel}**.`, ephemeral: true });
     }
-
+    
     // --- Moderation Commands ---
-
     if (interaction.commandName === 'kick') {
-      const user = interaction.options.getUser('user');
-      const member = interaction.guild.members.cache.get(user.id);
-      if (!member) return interaction.reply({ content: "User not found", ephemeral: true });
-      if (!member.kickable) return interaction.reply({ content: "❌ Cannot kick that member (role hierarchy).", ephemeral: true });
-      await member.kick();
-      return interaction.reply({ content: `✅ Kicked ${user.tag}`, ephemeral: true });
+        const user = interaction.options.getUser('user');
+        const member = interaction.guild.members.cache.get(user.id);
+        
+        if (!member) return interaction.reply({ content: '❌ User not found.', ephemeral: true });
+        if (!member.kickable) return interaction.reply({ content: '❌ Cannot kick this user.', ephemeral: true });
+        
+        try {
+            await member.kick('Kicked by a moderator via Hopper bot.');
+            return interaction.reply({ content: `✅ Kicked ${user.tag}.`, ephemeral: true });
+        } catch {
+            return interaction.reply({ content: '❌ Failed to kick.', ephemeral: true });
+        }
     }
 
     if (interaction.commandName === 'ban') {
-      const user = interaction.options.getUser('user');
-      await interaction.guild.members.ban(user.id);
-      return interaction.reply({ content: `✅ Banned ${user.tag}`, ephemeral: true });
+        const user = interaction.options.getUser('user');
+        const member = interaction.guild.members.cache.get(user.id);
+        
+        if (!member) return interaction.reply({ content: '❌ User not found.', ephemeral: true });
+        if (!member.bannable) return interaction.reply({ content: '❌ Cannot ban this user.', ephemeral: true });
+        
+        try {
+            await member.ban({ reason: 'Banned by a moderator via Hopper bot.' });
+            return interaction.reply({ content: `✅ Banned ${user.tag}.`, ephemeral: true });
+        } catch {
+            return interaction.reply({ content: '❌ Failed to ban.', ephemeral: true });
+        }
     }
 
     if (interaction.commandName === 'unban') {
-      const id = interaction.options.getString('userid');
-      await interaction.guild.members.unban(id);
-      return interaction.reply({ content: `✅ Unbanned ${id}`, ephemeral: true });
+        const userId = interaction.options.getString('userid');
+        
+        try {
+            const bannedUser = await interaction.guild.bans.remove(userId, 'Unbanned by a moderator via Hopper bot.');
+            return interaction.reply({ content: `✅ Unbanned ${bannedUser.tag}.`, ephemeral: true });
+        } catch {
+            return interaction.reply({ content: '❌ Failed to unban (User ID may be invalid or user is not banned).', ephemeral: true });
+        }
     }
 
     if (interaction.commandName === 'timeout') {
-      const user = interaction.options.getUser('user');
-      const minutes = interaction.options.getInteger('minutes');
-      const member = interaction.guild.members.cache.get(user.id);
-      if (!member.manageable) return interaction.reply({ content: "❌ Cannot timeout that member (role hierarchy).", ephemeral: true });
-      const duration = minutes * 60 * 1000;
-      await member.timeout(duration);
-      return interaction.reply({ content: `✅ Timed out ${user.tag} for ${minutes} minutes`, ephemeral: true });
+        const user = interaction.options.getUser('user');
+        const minutes = interaction.options.getInteger('minutes');
+        const member = interaction.guild.members.cache.get(user.id);
+        
+        if (!member) return interaction.reply({ content: '❌ User not found.', ephemeral: true });
+        if (!member.moderatable) return interaction.reply({ content: '❌ Cannot moderate this user.', ephemeral: true });
+        
+        const durationMs = minutes * 60 * 1000;
+        
+        try {
+            await member.timeout(durationMs, `Timed out for ${minutes} minutes by a moderator via Hopper bot.`);
+            return interaction.reply({ content: `✅ Timed out ${user.tag} for ${minutes} minutes`, ephemeral: true });
+        } catch {
+            return interaction.reply({ content: '❌ Failed to apply timeout. Check bot permissions.', ephemeral: true });
+        }
     }
-    
+
     // --- Ticket Setup Command ---
     if (interaction.commandName === 'setup') {
-      try {
-        const postChannel = await client.channels.fetch(SETUP_POST_CHANNEL);
-        if (!postChannel) return interaction.reply({ content: 'Setup channel not found', ephemeral: true });
+        try {
+            const postChannel = await client.channels.fetch(SETUP_POST_CHANNEL);
+            if (!postChannel) return interaction.reply({ content: 'Setup channel not found', ephemeral: true });
 
-        const createRow = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId('create_ticket').setLabel('Create Ticket').setStyle(ButtonStyle.Primary)
-        );
+            const createRow = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('create_ticket').setLabel('Create Ticket').setStyle(ButtonStyle.Primary)
+            );
 
-        await postChannel.send({ content: 'Hello! Do you want to create a ticket?', components: [createRow] });
-        return interaction.reply({ content: '✅ Setup message posted.', ephemeral: true });
-      } catch (err) {
-        console.error('Setup failed:', err);
-        return interaction.reply({ content: '❌ Setup failed', ephemeral: true });
-      }
+            await postChannel.send({ content: 'Hello! Do you want to create a ticket?', components: [createRow] });
+            return interaction.reply({ content: '✅ Setup message posted.', ephemeral: true });
+        } catch (err) {
+            console.error('Setup failed:', err);
+            return interaction.reply({ content: '❌ Setup failed', ephemeral: true });
+        }
     }
   }
 
   // Button interactions (tickets + thread buttons)
   if (interaction.isButton()) {
-    
     // --- TICKET CREATION ---
     if (interaction.customId === 'create_ticket') {
-      await interaction.deferReply({ ephemeral: true });
-
-      try {
-        const guild = interaction.guild;
-        const member = interaction.member;
-        const username = member.user.username.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 12);
-        const short = Math.floor(Math.random() * 9000 + 1000);
-        const chanName = `ticket-${username}-${short}`;
-
-        const modRoles = guild.roles.cache.filter(role => {
-            if (role.managed) return false;
-            const p = role.permissions;
-            return p.has(PermissionsBitField.Flags.ManageMessages) || p.has(PermissionsBitField.Flags.ModerateMembers) || p.has(PermissionsBitField.Flags.KickMembers) || p.has(PermissionsBitField.Flags.BanMembers);
-        });
-        const overwrites = [
-          { id: guild.roles.everyone.id, deny: [PermissionsBitField.Flags.ViewChannel] },
-          { id: member.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory] },
-          { id: client.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ManageChannels, PermissionsBitField.Flags.ReadMessageHistory] }
-        ];
-
-        modRoles.forEach(role => {
-          overwrites.push({ id: role.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory, PermissionsBitField.Flags.ManageMessages] });
-        });
-
-        let parent = null;
+        await interaction.deferReply({ ephemeral: true });
         try {
-          const setupChan = await client.channels.fetch(SETUP_POST_CHANNEL);
-          parent = setupChan.parentId || null;
-        } catch {}
+            const guild = interaction.guild;
+            const member = interaction.member;
+            
+            // Generate a simple, unique channel name
+            const username = member.user.username.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 12);
+            const short = Math.floor(Math.random() * 9000 + 1000);
+            const chanName = `ticket-${username}-${short}`;
 
-        const ticketChannel = await interaction.guild.channels.create({
-          name: chanName,
-          type: 0, 
-          permissionOverwrites: overwrites,
-          parent: parent,
-          reason: `Ticket created by ${member.user.tag}`
-        });
+            // Get roles with moderation permissions to allow them to see the ticket
+            const modRoles = guild.roles.cache.filter(role => {
+                if (role.managed) return false;
+                const p = role.permissions;
+                return p.has(PermissionsBitField.Flags.ManageMessages) || p.has(PermissionsBitField.Flags.ModerateMembers) || p.has(PermissionsBitField.Flags.KickMembers) || p.has(PermissionsBitField.Flags.BanMembers);
+            });
 
-        await interaction.editReply({ content: `Ticket created: ${ticketChannel}`, ephemeral: true });
+            // Set up channel permission overwrites
+            const overwrites = [
+                { id: guild.roles.everyone.id, deny: [PermissionsBitField.Flags.ViewChannel] },
+                { id: member.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory] },
+                { id: client.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ManageChannels, PermissionsBitField.Flags.ReadMessageHistory] }
+            ];
 
-        try {
-          const setupChan = await client.channels.fetch(SETUP_POST_CHANNEL);
-          await setupChan.send(`Ticket created ${ticketChannel} — added to Tickets catalog`);
-        } catch {}
+            modRoles.forEach(role => {
+                overwrites.push({
+                    id: role.id,
+                    allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory, PermissionsBitField.Flags.ManageMessages]
+                });
+            });
 
-        let modMention = '';
-        if (modRoles.size > 0) {
-          modMention = modRoles.map(r => `<@&${r.id}>`).slice(0, 5).join(' ');
-        } else {
-          modMention = '@moderators';
+            const newChannel = await guild.channels.create({
+                name: chanName,
+                type: 0, // Text channel
+                parent: TARGET_CHANNEL_ID,
+                permissionOverwrites: overwrites,
+                topic: `Ticket for ${member.user.tag} (${member.id})`
+            });
+
+            const closeRow = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('claim_ticket').setLabel('Claim Ticket').setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket').setStyle(ButtonStyle.Danger)
+            );
+
+            await newChannel.send({ content: `${member.toString()}, welcome to your ticket channel. A moderator will be with you shortly.`, components: [closeRow] });
+
+            return interaction.editReply({ content: `✅ Ticket created: ${newChannel.toString()}. You can view your transcript history in <#${TRANSCRIPT_CHANNEL_ID}>.`, components: [closeRow] });
+
+        } catch (err) {
+            console.error('create_ticket error:', err);
+            return interaction.editReply({ content: '❌ Failed to create ticket.', ephemeral: true });
         }
-
-        const closeRow = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId('claim_ticket').setLabel('Claim').setStyle(ButtonStyle.Success),
-          new ButtonBuilder().setCustomId('close_ticket').setLabel('Close').setStyle(ButtonStyle.Danger)
-        );
-
-        await ticketChannel.send({
-          content:
-`hello! So ${modMention} Will be here any minute to claim the ticket, and whoever has that role and says something in the chat will automatically claim the ticket.
-If they want to close it there will be a Close button on top. When close is confirmed, the transcript will be sent to <#${TRANSCRIPT_CHANNEL_ID}>.`,
-          components: [closeRow]
-        });
-
-      } catch (err) {
-        console.error('create_ticket error:', err);
-        return interaction.editReply({ content: '❌ Failed to create ticket.', ephemeral: true });
-      }
     }
 
     // --- TICKET CLAIM ---
     if (interaction.customId === 'claim_ticket') {
-      const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages) || interaction.member.permissions.has(PermissionsBitField.Flags.ModerateMembers) || interaction.member.permissions.has(PermissionsBitField.Flags.KickMembers);
-      if (!isMod) return interaction.reply({ content: 'Only moderators can claim tickets.', ephemeral: true });
+        const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages) || interaction.member.permissions.has(PermissionsBitField.Flags.ModerateMembers) || interaction.member.permissions.has(PermissionsBitField.Flags.KickMembers);
+        
+        if (!isMod) return interaction.reply({ content: 'Only moderators can claim tickets.', ephemeral: true });
 
-      const ch = interaction.channel;
-      if (!ch || !ch.name.startsWith('ticket-')) return interaction.reply({ content: 'This button must be used in a ticket channel.', ephemeral: true });
+        const ch = interaction.channel;
+        if (!ch || !ch.name.startsWith('ticket-')) return interaction.reply({ content: 'This button must be used in a ticket channel.', ephemeral: true });
+        
+        const topic = ch.topic || '';
+        if (topic.startsWith('claimed:')) {
+            return interaction.reply({ content: 'Ticket already claimed.', ephemeral: true });
+        }
 
-      const topic = ch.topic || '';
-      if (topic.startsWith('claimed:')) {
-        return interaction.reply({ content: 'Ticket already claimed.', ephemeral: true });
-      }
-
-      try {
-        await ch.setTopic(`claimed:${interaction.user.id}`);
-        await interaction.reply({ content: `✅ Ticket claimed by ${interaction.user.tag}`, ephemeral: true });
-        await ch.send(`✅ Ticket claimed by <@${interaction.user.id}>`);
-      } catch (err) {
-        console.error('claim_ticket error:', err);
-        await interaction.reply({ content: 'Failed to claim ticket', ephemeral: true });
-      }
+        try {
+            await ch.setTopic(`claimed:${interaction.user.id}`);
+            await interaction.reply({ content: `✅ Ticket claimed by ${interaction.user.tag}`, ephemeral: true });
+            await ch.send(`✅ Ticket claimed by <@${interaction.user.id}>`);
+        } catch (err) {
+            console.error('claim_ticket error:', err);
+            await interaction.reply({ content: 'Failed to claim ticket', ephemeral: true });
+        }
     }
 
     // --- TICKET CLOSE (Confirmation Prompt) ---
     if (interaction.customId === 'close_ticket') {
-      const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages) || interaction.member.permissions.has(PermissionsBitField.Flags.ModerateMembers) || interaction.member.permissions.has(PermissionsBitField.Flags.KickMembers);
-      if (!isMod) return interaction.reply({ content: 'Only moderators can close tickets.', ephemeral: true });
+        const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages) || interaction.member.permissions.has(PermissionsBitField.Flags.ModerateMembers) || interaction.member.permissions.has(PermissionsBitField.Flags.KickMembers);
+        
+        if (!isMod) return interaction.reply({ content: 'Only moderators can close tickets.', ephemeral: true });
 
-      const ch = interaction.channel;
-      if (!ch || !ch.name.startsWith('ticket-')) return interaction.reply({ content: 'This button must be used in a ticket channel.', ephemeral: true });
+        const ch = interaction.channel;
+        if (!ch || !ch.name.startsWith('ticket-')) return interaction.reply({ content: 'This button must be used in a ticket channel.', ephemeral: true });
 
-      const confirmRow = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('confirm_close_yes').setLabel('Yes, close').setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId('confirm_close_no').setLabel('No, keep open').setStyle(ButtonStyle.Secondary)
-      );
+        const confirmRow = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('confirm_close_yes').setLabel('Yes, close').setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId('confirm_close_no').setLabel('No, keep open').setStyle(ButtonStyle.Secondary)
+        );
 
-      await interaction.reply({ content: 'Are you sure you want to close this ticket? This will delete the channel after saving transcript.', components: [confirmRow], ephemeral: true });
+        await interaction.reply({ content: 'Are you sure you want to close this ticket?', components: [confirmRow], ephemeral: true });
     }
 
-    // --- TICKET CLOSE (Confirmed Action) ---
+    // --- TICKET CLOSE (Confirmed) ---
     if (interaction.customId === 'confirm_close_yes') {
-      const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages) || interaction.member.permissions.has(PermissionsBitField.Flags.ModerateMembers) || interaction.member.permissions.has(PermissionsBitField.Flags.KickMembers);
-      if (!isMod) return interaction.reply({ content: 'Only moderators can close tickets.', ephemeral: true });
+        await interaction.deferUpdate(); 
+        const ch = interaction.channel;
+        if (!ch || !ch.name.startsWith('ticket-')) return; 
 
-      const ch = interaction.channel;
-      if (!ch || !ch.name.startsWith('ticket-')) return interaction.reply({ content: 'This must be used in the ticket channel.', ephemeral: true });
-
-      await interaction.deferReply({ ephemeral: true });
-
-      try {
-        const fetched = await ch.messages.fetch({ limit: 100 });
-        const msgs = Array.from(fetched.values()).reverse(); 
-
-        let transcript = `Transcript for ${ch.name} (closed by ${interaction.user.tag})\n\n`;
-        for (const m of msgs) {
-          const time = m.createdAt.toISOString();
-          const author = `${m.author.tag}`;
-          const content = m.content || '';
-          const atts = m.attachments.map(a => a.url).join(' ');
-          transcript += `[${time}] ${author}: ${content} ${atts}\n`;
-        }
-
-        const tChan = await client.channels.fetch(TRANSCRIPT_CHANNEL_ID);
-        if (tChan) {
-          const MAX = 1900;
-          if (transcript.length <= MAX) {
-            await tChan.send({ content: `📄 **Ticket closed**: ${ch.name}\nClosed by ${interaction.user.tag}\n\n${transcript}` });
-          } else {
-            await tChan.send({ content: `📄 **Ticket closed**: ${ch.name}\nClosed by ${interaction.user.tag}\n\nTranscript (first part):` });
-            while (transcript.length > 0) {
-              const part = transcript.slice(0, MAX);
-              transcript = transcript.slice(MAX);
-              await tChan.send(part);
+        try {
+            const tChan = await client.channels.fetch(TRANSCRIPT_CHANNEL_ID);
+            if (!tChan || !tChan.send) {
+                await interaction.editReply({ content: '❌ Transcript channel not found. Deleting ticket without saving transcript.', ephemeral: true });
+                await ch.delete('Ticket closed (Transcript failed)');
+                return;
             }
-          }
+
+            // Fetch messages for transcript
+            const messages = await ch.messages.fetch({ limit: 100, before: interaction.id });
+            let transcript = messages.reverse().map(msg => 
+                `${msg.author.tag} (${new Date(msg.createdTimestamp).toLocaleString()}): ${msg.content}`
+            ).join('\n');
+
+            // Save transcript (split into chunks if too large)
+            const MAX = 1900;
+            if (transcript.length <= MAX) {
+                await tChan.send({ content: `📄 **Ticket closed**: ${ch.name}\nClosed by ${interaction.user.tag}\n\n${transcript}` });
+            } else {
+                await tChan.send({ content: `📄 **Ticket closed**: ${ch.name}\nClosed by ${interaction.user.tag}\n\nTranscript (first part):` });
+                while (transcript.length > 0) {
+                    const part = transcript.slice(0, MAX);
+                    transcript = transcript.slice(MAX);
+                    await tChan.send(part);
+                }
+            }
+
+            await interaction.editReply({ content: '✅ Transcript saved. Deleting ticket channel...', ephemeral: true });
+            await ch.delete('Ticket closed');
+
+        } catch (err) {
+            console.error('confirm_close_yes error:', err);
+            return interaction.editReply({ content: '❌ Failed to close ticket', ephemeral: true });
         }
-
-        await interaction.editReply({ content: '✅ Transcript saved. Deleting ticket channel...', ephemeral: true });
-        await ch.delete('Ticket closed');
-      } catch (err) {
-        console.error('confirm_close_yes error:', err);
-        return interaction.editReply({ content: '❌ Failed to close ticket', ephemeral: true });
-      }
-    }
-
-    // --- TICKET CLOSE (Cancelled) ---
-    if (interaction.customId === 'confirm_close_no') {
-      return interaction.reply({ content: 'Close cancelled.', ephemeral: true });
     }
     
+    // --- TICKET CLOSE (Cancelled) ---
+    if (interaction.customId === 'confirm_close_no') {
+        return interaction.reply({ content: 'Close cancelled.', ephemeral: true });
+    }
+
     // ================== THREAD BUTTONS LOGIC ==================
     if (interaction.customId === 'archive_thread' || interaction.customId === 'edit_title') {
-      const thread = interaction.channel;
-      
-      if (!(thread instanceof ThreadChannel)) { 
-        return interaction.reply({ content: "❌ Use this command inside a thread.", ephemeral: true });
-      }
-      
-      const isThreadStarter = thread.ownerId === interaction.user.id;
-      const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages) || interaction.member.permissions.has(PermissionsBitField.Flags.ManageThreads);
+        const thread = interaction.channel;
+        if (!(thread instanceof ThreadChannel)) {
+            return interaction.reply({ content: "❌ Use this command inside a thread.", ephemeral: true });
+        }
 
-      if (!isThreadStarter && !isMod) {
-          return interaction.reply({ content: "❌ Only the thread creator or a moderator can use these controls.", ephemeral: true });
-      }
+        const isThreadStarter = thread.ownerId === interaction.user.id;
+        const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages) || interaction.member.permissions.has(PermissionsBitField.Flags.ManageThreads);
 
-      if (interaction.customId === 'archive_thread') {
-        await thread.setArchived(true);
-        return interaction.reply({ content: "✅ Archived", ephemeral: true });
-      }
-
-      if (interaction.customId === 'edit_title') {
-        await interaction.reply({ content: "Send the new title in the thread. You have 30 seconds.", ephemeral: true });
+        if (!isThreadStarter && !isMod) {
+            return interaction.reply({ content: "❌ Only the thread creator or a moderator can use these controls.", ephemeral: true });
+        }
         
-        const filter = m => m.author.id === interaction.user.id && m.channelId === thread.id;
-        const collector = thread.createMessageCollector({ filter, time: 30000, max: 1 });
-        collector.on('collect', async (msg) => {
-          try {
-              await thread.setName(msg.content.slice(0, 100)); 
-              await msg.delete();
-              await interaction.followUp({ content: "✅ Title updated", ephemeral: true });
-          } catch (e) {
-              console.error("Failed to edit thread title:", e);
-              await interaction.followUp({ content: "❌ Failed to update title (Permissions or length)", ephemeral: true });
-          }
-        });
-      }
+        if (interaction.customId === 'archive_thread') {
+            await thread.setArchived(true);
+            return interaction.reply({ content: "✅ Archived", ephemeral: true });
+        }
+
+        if (interaction.customId === 'edit_title') {
+            await interaction.reply({ content: "Send the new title in the thread. You have 30 seconds.", ephemeral: true });
+            
+            const filter = m => m.author.id === interaction.user.id && m.channelId === thread.id;
+            const collector = thread.createMessageCollector({ filter, time: 30000, max: 1 });
+            
+            collector.on('collect', async (msg) => {
+                try {
+                    // Set thread name, limited to 100 characters
+                    await thread.setName(msg.content.slice(0, 100)); 
+                    await msg.delete();
+                    await interaction.followUp({ content: "✅ Title updated", ephemeral: true });
+                } catch (e) {
+                    console.error("Failed to edit thread title:", e);
+                    await interaction.followUp({ content: "❌ Failed to update title (Permissions or length)", ephemeral: true });
+                }
+            });
+        }
     }
   }
 });
 
-// ================= AUTO MODERATION + RULES =================
+
+// ================= MESSAGE EVENT (XP, AFK, MODERATION) =================
 client.on('messageCreate', async (message) => {
-  if (message.author.bot) return;
-
-  const content = message.content;
-  const lowerContent = content.toLowerCase();
-  const member = message.member;
-  const userId = message.author.id;
-  
-  // -------------------------------------------------------------
-  // --- XP GAIN LOGIC (Runs before moderation checks) ---
-  // -------------------------------------------------------------
-  const XP_COOLDOWN_MS = 60000; // 60 seconds cooldown
-  const BASE_XP = 15;
-  const MAX_XP_PER_MESSAGE = 25;
-  const XP_GAIN = Math.floor(Math.random() * (MAX_XP_PER_MESSAGE - BASE_XP + 1)) + BASE_XP;
-  
-  if (message.channel.id !== AFK_XP_EXCLUSION_CHANNEL_ID) {
-      const now = Date.now();
-
-      if (!xpCooldown.has(userId) || now > xpCooldown.get(userId)) {
-          
-          let xpToAward = XP_GAIN;
-
-          if (member && member.roles.cache.has(BOOSTER_ROLE_ID)) {
-              xpToAward *= 2;
-          }
-
-          await addXP(member, xpToAward, message);
-          xpCooldown.set(userId, now + XP_COOLDOWN_MS);
-      }
-  }
-  // -------------------------------------------------------------
-
-
-  // -------------------------------------------------------------
-  // --- AFK REMOVAL AND PING CHECK ---
-  // -------------------------------------------------------------
-  
-  // 1. CHECK FOR RETURNING USER (If the author is currently AFK)
-  if (afkStatus.has(userId)) {
-      afkStatus.delete(userId); // Remove AFK status
-
-      const returnMessage = `hello <@${userId}>! Toon your AFK has been removed <:happymissdiamond:1448752668259647619>`;
-      
-      try {
-        const sentMessage = await message.channel.send(returnMessage);
-        
-        setTimeout(() => {
-            sentMessage.delete().catch(e => console.log('Failed to delete AFK return message:', e));
-        }, 5000);
-      } catch (e) {
-          console.error("Failed to send/delete AFK return message:", e);
-      }
-  }
-  
-  // 2. CHECK FOR AFK PING (If the message mentions an AFK user)
-  if (message.mentions.users.size > 0) {
-      message.mentions.users.forEach(async (mentionedUser) => {
-          if (afkStatus.has(mentionedUser.id) && mentionedUser.id !== userId) {
-              const afkData = afkStatus.get(mentionedUser.id);
-              
-              await message.reply({ 
-                  content: `<@${mentionedUser.id}> is currently AFK: **${afkData.reason}**`,
-                  allowedMentions: { repliedUser: false } 
-              }).catch(e => console.log('Failed to send AFK reply:', e));
-          }
-      });
-  }
-  
-  // -------------------------------------------------------------
-  // --- AFK PREFIX COMMAND CHECK: ?afk [reason] (The ONLY prefix command) ---
-  // -------------------------------------------------------------
-  if (lowerContent.startsWith('?afk')) {
-      const reason = content.slice(4).trim() || 'I am currently away.';
-      
-      const { isToxic } = await checkMessageToxicity(reason);
-      if (isToxic) {
-          await message.delete().catch(() => {});
-          return message.channel.send(`❌ <@${userId}>: Your AFK reason was blocked by the safety filter.`);
-      }
-
-      afkStatus.set(userId, { reason: reason, time: Date.now() });
-
-      try {
-          await message.channel.send(`✅ <@${userId}> is now AFK. Message: **${reason}**`);
-          await message.delete().catch(() => {}); 
-      } catch (e) {
-          console.error("Failed to execute/delete ?afk command:", e);
-      }
-      return; 
-  }
-  // -------------------------------------------------------------
-
-
-  // Global Check: Identify a pure GIF link
-  const isPureGIFLink = content.trim().length > 0 && 
-                        (lowerContent.startsWith('http://') || lowerContent.startsWith('https://')) &&
-                        (lowerContent.includes('tenor.com') || lowerContent.includes('giphy.com') || lowerContent.endsWith('.gif')) &&
-                        message.attachments.size === 0; 
-
-  // --- MANUAL WORD FILTER CHECK (FIRST LINE OF DEFENSE) ---
-  const manualFilter = filterMessageManually(content);
-  
-  if (manualFilter.isSevere) {
-      await message.delete().catch(() => {});
-      try {
-        if (member && member.manageable) {
-            await member.timeout(60 * 60 * 1000, `Manual Severe Word Detected: ${manualFilter.matchedWord}`); 
-        }
-        const log = client.channels.cache.get(LOG_CHANNEL_ID);
-        if (log) log.send(`🛑 **MANUAL Filter Violation (Timeout 60m)**\nUser: <@${message.author.id}>\nReason: Severe word match: ${manualFilter.matchedWord}\nContent: ||${message.content}||`);
-      } catch (e) {
-          console.error("Failed to apply manual severe moderation action:", e);
-      }
-      return; 
-  }
-  
-  if (manualFilter.isMild) {
-      await message.delete().catch(() => {});
-      const log = client.channels.cache.get(LOG_CHANNEL_ID);
-      if (log) log.send(`🗑️ **MANUAL Filter Violation (Deleted)**\nUser: <@${message.author.id}>\nReason: Mild word match: ${manualFilter.matchedWord}\nContent: ||${message.content}||`);
-      return;
-  }
-  // --- END MANUAL WORD FILTER CHECK ---
-
-
-  // --- AI TOXICITY CHECK (SECOND LAYER DEFENSE) ---
-  const { isToxic, blockCategory } = await checkMessageToxicity(content);
-  // ------------------------------------------------
-
-
-  // RULE: INAPPROPRIATE RP LOCKDOWN 
-  if (message.channel.id === RP_CHANNEL_ID && isToxic) {
-      const category = message.guild.channels.cache.get(RP_CATEGORY_ID);
-      if (category && category.type === 4) { 
-          try {
-              const everyoneRole = message.guild.roles.cache.find(r => r.name === '@everyone');
-              if (everyoneRole) {
-                  await category.permissionOverwrites.edit(everyoneRole, { ViewChannel: false });
-              }
-              await message.delete().catch(() => {});
-              const log = client.channels.cache.get(LOG_CHANNEL_ID);
-              if (log) log.send(`🔒 **RP Category Lockdown**\nCategory <#${RP_CATEGORY_ID}> locked down due to inappropriate RP attempt by <@${message.author.id}> in <#${RP_CHANNEL_ID}>.\nHopper AI Reason: ${blockCategory}\nMessage: ||${message.content}||`);
-              return; 
-          } catch (e) {
-              console.error("Failed to lock RP category:", e);
-              message.channel.send(`⚠️ WARNING: Inappropriate content detected in <#${RP_CHANNEL_ID}>. Category lockdown failed. Manually review <@${message.author.id}>.`);
-          }
-      }
-  }
-
-  // RULE 5: INAPPROPRIATE USERNAME CHECK (on message send - always runs)
-  if (member) {
-    await moderateNickname(member);
-  }
-   
-  // --- START GENERAL MODERATION BLOCK ---
-  if (message.channel.id !== TARGET_CHANNEL_ID && !isPureGIFLink) {
+    // Ignore bots and webhooks
+    if (message.author.bot || message.webhookId) return;
     
-    // --- AI MODERATION ACTION (TIMEOUT FOR GENERAL TOXICITY/SLURS MISSED BY MANUAL FILTER) ---
-    if (isToxic) {
-      await message.delete().catch(() => {});
-      
-      try {
-        if (member && member.manageable) {
-            await member.timeout(30 * 60 * 1000, `Hopper AI Detected Severe Violation: ${blockCategory}`).catch(() => {}); 
-        }
-        
-        const log = client.channels.cache.get(LOG_CHANNEL_ID);
-        if (log) log.send(`🚨 **Hopper AI Filter Violation (Timeout 30m)**\nUser: <@${message.author.id}>\nAI Reason: ${blockCategory}\nContent: ||${message.content}||`);
-      } catch (e) {
-          console.error("Failed to apply AI moderation action:", e);
-      }
-      return;
-    }
+    const content = message.content;
+    const lowerContent = content.toLowerCase();
+    const userId = message.author.id;
+    const member = message.member;
+
+    // =============================================================
+    // --- XP GAIN LOGIC (Must run first for all non-bot messages) ---
+    // =============================================================
+    const XP_COOLDOWN_MS = 60 * 1000; // 60 seconds cooldown for XP
+    const XP_GAIN = 15; // Base XP per message
+    const BASE_XP = 10; // Extra random amount
     
-    // RULE: ANTI-HARASSMENT / ANTI-TROLLING (MUTE) - Legacy Regex
-    const explicitTrollHarassRegex = /(^|\s)(mute|ban|harass|troll|bullying)\s+(that|him|her|them)\s+(\S+|$)|(you\s+(are|re)\s+(a|an)?\s+(troll|bully|harasser))/i;
-
-    if (explicitTrollHarassRegex.test(lowerContent)) {
-        await message.delete().catch(() => {});
-
-        if (member && member.manageable) {
-            try {
-                await member.timeout(60 * 60 * 1000, "Trolling/Harassment detected"); 
-                
-                const log = client.channels.cache.get(LOG_CHANNEL_ID);
-                if (log) log.send(`🛑 **Harassment/Trolling Mute**\nUser: <@${message.author.id}> timed out for 60m.\nContent: ||${message.content}||\nReason: Detected explicit command or statement of harassment/trolling/bullying.`);
-                
-            } catch (e) {
-                console.error("Failed to mute/log troll:", e);
+    // Check if user is in an XP-excluded channel and not on cooldown
+    if (message.channel.id !== AFK_XP_EXCLUSION_CHANNEL_ID) {
+        const now = Date.now();
+        if (!xpCooldown.has(userId) || now > xpCooldown.get(userId)) {
+            let xpToAward = XP_GAIN + Math.floor(Math.random() * BASE_XP);
+            
+            // Apply booster role multiplier
+            if (member && member.roles.cache.has(BOOSTER_ROLE_ID)) {
+                xpToAward *= 2;
             }
+
+            await addXP(member, xpToAward, message);
+            xpCooldown.set(userId, now + XP_COOLDOWN_MS);
         }
-        return;
     }
     
-    // RULE: SELECTIVE ADVERTISING
-    const externalAdRegex = /(subscribe to my|go check out my|new video on|follow my insta|patreon|onlyfans|youtube\b|twitch\b|facebook\b|tiktok\b)/i;
-    const allowedAds = /(stormy and hops|stormy & hops)/i; 
+    // -------------------------------------------------------------
+    // --- AFK REMOVAL AND PING CHECK ---
+    // -------------------------------------------------------------
+
+    // 1. CHECK FOR RETURNING USER (If the author is currently AFK)
+    if (afkStatus.has(userId)) {
+        afkStatus.delete(userId); // Remove AFK status
+        const returnMessage = `hello <@${userId}>! Toon your AFK has been removed <:happymissdiamond:1448752668259647619>`;
+        try {
+            const sentMessage = await message.channel.send(returnMessage);
+            setTimeout(() => {
+                sentMessage.delete().catch(e => console.log('Failed to delete AFK return message:', e));
+            }, 5000);
+        } catch (e) {
+            console.error("Failed to send/delete AFK return message:", e);
+        }
+    }
+    
+    // 2. CHECK FOR AFK PING (If the message mentions an AFK user)
+    if (message.mentions.users.size > 0) {
+        message.mentions.users.forEach(async (mentionedUser) => {
+            if (afkStatus.has(mentionedUser.id) && mentionedUser.id !== userId) {
+                const afkData = afkStatus.get(mentionedUser.id);
+                await message.reply({ content: `<@${mentionedUser.id}> is currently AFK: **${afkData.reason}**`, allowedMentions: { repliedUser: false } }).catch(e => console.log('Failed to send AFK reply:', e));
+            }
+        });
+    }
+
+    // -------------------------------------------------------------
+    // --- AFK PREFIX COMMAND CHECK: ?afk [reason] (The ONLY prefix command) ---
+    // -------------------------------------------------------------
+    if (lowerContent.startsWith('?afk')) {
+        const reason = content.slice(4).trim() || 'I am currently away.';
+        const { isToxic } = await checkMessageToxicity(reason);
+
+        if (isToxic) {
+            return message.reply({ content: '❌ Your AFK reason contains inappropriate content.', allowedMentions: { repliedUser: false } });
+        }
+        
+        afkStatus.set(userId, { reason, timestamp: Date.now() });
+        return message.reply({ content: `✅ Toon I have set your AFK: **${reason}**`, allowedMentions: { repliedUser: false } });
+    }
+
+    // =============================================================
+    // --- MODERATION LOGIC (Only runs if not an AFK command) ---
+    // =============================================================
+
+    // RULE 1: Direct link advertising filter (only allows internal links and specific Stormy & Hops sites)
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    const isPureGIFLink = lowerContent.endsWith('.gif') && content.match(urlRegex) && content.match(urlRegex)[0] === content.trim();
+
+    // Check for general external advertising
+    const externalAdRegex = /(discord\.gg|patreon\.com|youtube\.com\/channel|subscribestar|onlyfans|fansly|twitter\.com\/)/i;
+    const allowedAds = /(youtube\.com\/stormyandhops|x\.com\/stormyandhops|stormy-and-hops\.fandom\.com|stormyandhops\.netlify\.app|x\.com\/bunnytoonsstudios)/i;
 
     if (externalAdRegex.test(lowerContent) && !allowedAds.test(lowerContent)) {
         await message.delete().catch(() => {});
@@ -1246,101 +1142,143 @@ client.on('messageCreate', async (message) => {
         if (log) log.send(`📢 **Advertising Deleted**\nUser: <@${message.author.id}>\nContent: ||${message.content}||\nReason: External promotion/subscription attempt.`);
         return;
     }
-    
-    // RULE: POLITICAL CONTENT SOFT FILTER
-    const politicalKeywords = ['politics', 'government', 'election', 'congress', 'biden', 'trump', 'conservative', 'liberal', 'democracy', 'republican', 'democrat'];
-    let politicalCount = 0;
-    for (const keyword of politicalKeywords) {
-        if (lowerContent.includes(keyword)) {
-            politicalCount++;
-        }
-    }
 
-    if (politicalCount >= 4) {
+    // RULE 2: MANUAL WORD FILTER CHECK (for severe slurs/bad words)
+    const manualFilter = filterMessageManually(content);
+    
+    if (manualFilter.isSevere) {
         await message.delete().catch(() => {});
-        const log = client.channels.cache.get(LOG_CHANNEL_ID);
-        if (log) log.send(`🗳️ **Political Content Filter**\nUser: <@${message.author.id}>\nContent: ||${message.content}||\nReason: Excessive political content (Count: ${politicalCount}).`);
+        try {
+            if (member && member.manageable) {
+                await member.timeout(60 * 60 * 1000, 'Severe manual word filter violation (1 hour timeout)'); // 1 hour timeout
+            }
+            const log = client.channels.cache.get(LOG_CHANNEL_ID);
+            if (log) log.send(`🚨 **MANUAL Severe Violation (Timeout)**\nUser: <@${message.author.id}>\nReason: Severe word match: ${manualFilter.matchedWord}\nContent: ||${message.content}||\nAction: 1 hour timeout.`);
+        } catch (e) {
+            console.error("Failed to apply manual severe moderation action:", e);
+        }
         return;
     }
 
-
-    // RULE 7: UNDERAGE CHECK (Admission of being under 13)
-    const underageRegex = /\b(i|i'm|im)\s+(am\s+)?(under\s+13|1[0-2]|[1-9])\b/i;
-    if (underageRegex.test(lowerContent)) {
-      await message.delete().catch(() => {});
-      const log = client.channels.cache.get(LOG_CHANNEL_ID);
-      if (log) log.send(`👶 **Underage Admission Detected**\nUser: <@${message.author.id}>\nContent: ||${message.content}||\nAction: Deleted immediately.`);
-      return;
+    if (manualFilter.isMild) {
+        await message.delete().catch(() => {});
+        const log = client.channels.cache.get(LOG_CHANNEL_ID);
+        if (log) log.send(`🗑️ **MANUAL Filter Violation (Deleted)**\nUser: <@${message.author.id}>\nReason: Mild word match: ${manualFilter.matchedWord}\nContent: ||${message.content}||`);
+        return;
     }
+    // --- END MANUAL WORD FILTER CHECK ---
 
-    // RULE 4 & 6: Advertising / Scam / Links
-    const isAdOrScam = 
-      lowerContent.includes('discord.gg/') || 
-      lowerContent.includes('free nitro') ||
-      lowerContent.includes('steam gift') ||
-      lowerContent.includes('crypto') ||
-      lowerContent.includes('bitcoin');
-
-    if (isAdOrScam) {
-      await message.delete().catch(() => {});
-      const log = client.channels.cache.get(LOG_CHANNEL_ID);
-      if (log) log.send(`🔗 **Link/Scam Deleted**\nUser: <@${message.author.id}>\nContent: ||${message.content}||`);
-      return;
-    }
-
-    // RULE 10: No Doxing (Basic IP detection)
-    const ipRegex = /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/;
-    if (ipRegex.test(lowerContent)) {
-      await message.delete().catch(() => {});
-      const log = client.channels.cache.get(LOG_CHANNEL_ID);
-      if (log) log.send(`⚠️ **Possible Dox Attempt**\nUser: <@${message.author.id}>\nContent: ||${message.content}||`);
-      return;
-    }
-  } // --- END GENERAL MODERATION BLOCK ---
-
-
-  // IMAGE ONLY CHANNEL THREAD SYSTEM 
-  if (message.channel.id === TARGET_CHANNEL_ID) {
+    // --- AI TOXICITY CHECK (SECOND LAYER DEFENSE) ---
+    const { isToxic, blockCategory } = await checkMessageToxicity(content);
+    // ------------------------------------------------
     
-    // Check 1: Attachments (images/videos uploaded)
-    const hasAttachment = message.attachments.size > 0;
-
-    // Check 2: Valid Media Links
-    const isMediaLink = isPureGIFLink || 
-        lowerContent.includes('imgur.com') || 
-        lowerContent.includes('.png') || 
-        lowerContent.includes('.jpe') || 
-        lowerContent.includes('.webp') ||
-        lowerContent.includes('.mp4') ||
-        lowerContent.includes('.mov');
-
-    // If it has NEITHER an attachment NOR a valid media link, it's pure text or an invalid link, so delete it.
-    if (!hasAttachment && !isMediaLink) {
-      await message.delete().catch(() => {});
-      return;
+    // RULE 3: INAPPROPRIATE RP LOCKDOWN
+    if (message.channel.id === RP_CHANNEL_ID && isToxic) {
+        const category = message.guild.channels.cache.get(RP_CATEGORY_ID);
+        if (category && category.type === 4) { // 4 is GUILD_CATEGORY
+            try {
+                const everyoneRole = message.guild.roles.cache.find(r => r.name === '@everyone');
+                if (everyoneRole) {
+                    await category.permissionOverwrites.edit(everyoneRole, { ViewChannel: false });
+                }
+                
+                await message.delete().catch(() => {});
+                const log = client.channels.cache.get(LOG_CHANNEL_ID);
+                if (log) log.send(`🔒 **RP Category Lockdown**\nCategory <#${RP_CATEGORY_ID}> locked down due to inappropriate RP attempt by <@${message.author.id}> in <#${RP_CHANNEL_ID}>.\nHopper AI Reason: ${blockCategory}\nMessage: ||${message.content}||`);
+                return;
+            } catch (e) {
+                console.error("Failed to lock RP category:", e);
+                message.channel.send(`⚠️ WARNING: Inappropriate content detected in <#${RP_CHANNEL_ID}>. Category lockdown failed. Manually review <@${message.author.id}>.`);
+            }
+        }
     }
 
-    try { await message.react('✨'); } catch {}
+    // RULE 4: INAPPROPRIATE USERNAME CHECK (on message send - always runs)
+    if (member) {
+        await moderateNickname(member);
+    }
+    
+    // --- START GENERAL MODERATION BLOCK ---
+    if (message.channel.id !== TARGET_CHANNEL_ID && !isPureGIFLink) {
+        
+        // --- AI MODERATION ACTION (TIMEOUT FOR GENERAL TOXICITY/SLURS MISSED BY MANUAL FILTER) ---
+        if (isToxic) {
+            await message.delete().catch(() => {});
+            try {
+                if (member && member.manageable) {
+                    await member.timeout(30 * 60 * 1000, `AI toxicity flag: ${blockCategory}`); // 30 minute timeout
+                }
+                const log = client.channels.cache.get(LOG_CHANNEL_ID);
+                if (log) log.send(`⚠️ **AI Toxic Message (Timeout)**\nUser: <@${message.author.id}>\nAI Reason: ${blockCategory}\nContent: ||${message.content}||\nAction: 30 minute timeout.`);
+            } catch (e) {
+                console.error("Failed to apply AI moderation action:", e);
+            }
+            return;
+        }
 
-    let thread;
-    try {
-      // Create a thread on the image message
-      thread = await message.startThread({
-        name: `Thread: ${message.author.username}`,
-        autoArchiveDuration: 60,
-        reason: 'Automatic thread creation for image post'
-      });
-    } catch { return; }
+        // RULE 5: Mass mention/ping protection (5+ non-bot mentions)
+        const nonBotMentions = message.mentions.users.filter(u => !u.bot).size;
+        if (nonBotMentions >= 5) {
+            await message.delete().catch(() => {});
+            try {
+                if (member && member.manageable) {
+                    await member.timeout(5 * 60 * 1000, 'Mass mention/ping (5 minute timeout)'); // 5 minute timeout
+                }
+                const log = client.channels.cache.get(LOG_CHANNEL_ID);
+                if (log) log.send(`🔕 **Mass Mention (Timeout)**\nUser: <@${message.author.id}>\nMentions: ${nonBotMentions}\nAction: 5 minute timeout.`);
+            } catch (e) {
+                console.error("Failed to apply mass mention action:", e);
+            }
+            return;
+        }
 
-    try {
-      // Send thread control buttons
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('archive_thread').setLabel('Archive Thread').setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId('edit_title').setLabel('Edit Title').setStyle(ButtonStyle.Primary)
-      );
-      await thread.send({ content: "Thread controls:", components: [row] });
-    } catch { }
-  }
+        // RULE 6: EXCESSIVE POLITICAL CONTENT SOFT FILTER (Requires 4+ keywords)
+        const politicalKeywords = ['politics', 'government', 'election', 'congress', 'biden', 'trump', 'conservative', 'liberal', 'democracy', 'republican', 'democrat'];
+        let politicalCount = 0;
+        for (const keyword of politicalKeywords) {
+            if (lowerContent.includes(keyword)) {
+                politicalCount++;
+            }
+        }
+        
+        if (politicalCount >= 4) {
+            await message.delete().catch(() => {});
+            const log = client.channels.cache.get(LOG_CHANNEL_ID);
+            if (log) log.send(`🗳️ **Political Content Filter**\nUser: <@${message.author.id}>\nContent: ||${message.content}||\nReason: Excessive political content (Count: ${politicalCount}).`);
+            return;
+        }
+
+        // RULE 7: UNDERAGE CHECK (Admission of being under 13)
+        const underageRegex = /\b(i|i'm|im)\s+(am\s+)?(under\s+13|1[0-2]|[1-9])\b/i;
+        if (underageRegex.test(lowerContent)) {
+            await message.delete().catch(() => {});
+            const log = client.channels.cache.get(LOG_CHANNEL_ID);
+            if (log) log.send(`👶 **Underage Admission**\nUser: <@${message.author.id}>\nContent: ||${message.content}||\nReason: Admitted to being under 13. (Action: Message deleted, no further action by bot. Mod review required)`);
+            return;
+        }
+
+        // RULE 8: CAPITALIZATION SPAM FILTER (80% of characters are capital, and total length > 15)
+        const totalChars = content.replace(/[^a-zA-Z]/g, '').length;
+        const upperChars = content.replace(/[^A-Z]/g, '').length;
+        if (totalChars > 15 && (upperChars / totalChars) > 0.8) {
+            await message.delete().catch(() => {});
+            const log = client.channels.cache.get(LOG_CHANNEL_ID);
+            if (log) log.send(`📣 **Capitalization Spam**\nUser: <@${message.author.id}>\nContent: ||${message.content}||\nReason: Excessive capitalization (Spam).`);
+            return;
+        }
+
+        // RULE 9: SPAM/COOLDOWN FILTER (Too many messages too fast)
+        // Note: The XP Cooldown handles per-user messaging frequency, so a separate strict spam filter is less critical here.
+        // If a spam filter is needed, it would look at total messages per second across the channel/guild.
+        
+    }
+    // --- END GENERAL MODERATION BLOCK ---
+});
+
+// ================= RULE 10: USER PRESENCE MONITORING (for AFK command) =================
+client.on('presenceUpdate', (oldPresence, newPresence) => {
+    // This is useful for future features, but the current AFK system relies on message event/command.
+    // Keeping this event listener here for future expansion (e.g., auto-AFK based on status)
 });
 
 // ================= RULE 11: JOIN/LEAVE TROLLING =================
@@ -1352,6 +1290,7 @@ client.on('guildMemberAdd', async (member) => {
    
   const userData = joinTracker.get(userId) || { count: 0, lastJoin: 0 };
 
+  // Reset count if the last join was more than 15 minutes ago
   if (now - userData.lastJoin > 15 * 60 * 1000) {
     userData.count = 0;
   }
@@ -1371,7 +1310,7 @@ client.on('guildMemberAdd', async (member) => {
     }
   } else if (userData.count >= 6) {
     const log = client.channels.cache.get(LOG_CHANNEL_ID);
-    if (log) log.send(`⚠️ **Troll Warning**\nUser: ${member.user.tag} has joined ${userData.count} times recently.`);
+    if (log) log.send(`⚠️ **Troll Warning**\nUser: ${member.user.tag} has joined ${userData.count} times in the last 15 minutes.`);
   }
 });
 
@@ -1381,6 +1320,8 @@ client.login(process.env.TOKEN);
 // This creates a minimal web server required by Render's free tier to keep the bot running.
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
-  res.writeHead(200);
-  res.end("Bot is running!");
-}).listen(PORT, () => console.log(`🌐 Server running on ${PORT}`));
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Hopper is running\n');
+}).listen(PORT, () => {
+    console.log(`Web server running on port ${PORT}`);
+});
