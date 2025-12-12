@@ -30,6 +30,19 @@ if (!process.env.GEMINI_API_KEY) {
 }
 // --------------------
 
+// ====================== 🟢 CRITICAL FIX: CLIENT INITIALIZATION 🟢 ======================
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent, // Required to read message content for moderation/AFK
+    GatewayIntentBits.GuildMembers,   // Required for member-based features (kicks, bans, nickname check, join/leave)
+    GatewayIntentBits.GuildMessageReactions // Good practice for reaction usage
+  ]
+});
+// =========================================================================================
+
+
 // ====================== CRITICAL CONFIGURATION: REPLACE THESE ======================
 
 // ** CRITICAL: REPLACE THIS WITH THE DIRECT LINK TO STORMY'S RP IMAGE **
@@ -539,9 +552,6 @@ client.on('interactionCreate', async (interaction) => {
   // Button interactions (tickets + thread buttons)
   if (interaction.isButton()) {
     
-    // --- TICKET CREATION, CLAIM, CLOSE LOGIC (omitted for brevity) ---
-    // ... [Your existing ticket logic] ...
-
     // --- TICKET CREATION ---
     if (interaction.customId === 'create_ticket') {
       await interaction.deferReply({ ephemeral: true });
