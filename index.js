@@ -28,7 +28,7 @@ if (!process.env.GEMINI_API_KEY) {
   console.error("❌ GEMINI_API_KEY not found. Add GEMINI_API_KEY in Render Environment Variables to enable AI.");
   process.exit(1);
 }
-// --------------------
+// --------------------\
 
 // ====================== 🟢 CRITICAL FIX: CLIENT INITIALIZATION 🟢 ======================
 const client = new Client({
@@ -244,9 +244,9 @@ client.once('ready', async () => {
 
     // --- AI COMMAND: RENAMED TO /ASK AND FOCUSED ON STORMY/HOPS ---
     new SlashCommandBuilder()
-      .setName('ask') // <-- RENAMED from 'ai'
-      .setDescription('Ask about Stormy and Hops (Uses Google AI with Search).') // <-- Updated Description
-      .addStringOption(opt => opt.setName('prompt').setDescription('Your question for the AI').setRequired(true)),
+      .setName('ask') 
+      .setDescription('Search about stormy and hops') // <-- Updated Description
+      .addStringOption(opt => opt.setName('prompt').setDescription('Your question for Hopper').setRequired(true)), // <-- Updated to Hopper
       
     new SlashCommandBuilder()
       .setName('sayrp')
@@ -339,7 +339,7 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ content: "✅ Sent anonymously", ephemeral: true });
     }
     
-    if (interaction.commandName === 'ask') { // <-- RENAMED from 'ai'
+    if (interaction.commandName === 'ask') { 
         await interaction.deferReply(); 
         const prompt = interaction.options.getString('prompt');
 
@@ -349,9 +349,8 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         try {
-            // --- UPDATED: ADDED SYSTEM INSTRUCTION & GOOGLE SEARCH GROUNDING ---
-            // Explicitly directs the AI to ONLY use information from the listed official/fandom sources.
-            const systemInstruction = "You are an assistant for the 'Stormy and Hops' Discord server. You MUST use Google Search for grounding, but you are strictly limited to ONLY providing information found on the official websites and the Fandom wiki, including: stormy-and-hops.fandom.com, stormyandhops.netlify.app, X.com/stormyandhops, and YouTube.com/stormyandhops. DO NOT use any other information source. Your answers must be about Stormy and Hops and must maintain a friendly, server-appropriate tone.";
+            // --- UPDATED SYSTEM INSTRUCTION & GOOGLE SEARCH GROUNDING ---
+            const systemInstruction = "You are the character Hops Bunny, an assistant for the 'Stormy and Hops' Discord server. You MUST use Google Search for grounding, but you are strictly limited to ONLY providing information found on the following official and fandom sources: stormy-and-hops.fandom.com, stormyandhops.netlify.app, X.com/stormyandhops, X.com/bunnytoonsstudios, and YouTube.com/stormyandhops. DO NOT use any other external information source. Your answers must be about the Stormy and Hops universe only. Maintain a friendly, server-appropriate 'Hopper' tone, and incorporate the provided custom server emojis into your responses when appropriate: <:MrLuck:1448751843885842623>, <:cheeringstormy:1448751467400790206>, <:concerdnedjin:1448751740030816481>, <:happymissdiamond:1448752668259647619>, <:heartkatie:1448751305756639372>, <:madscarlet:1448751667863355482>, <:mischevousoscar:1448752833951305789>, <:questioninghops:1448751559067308053>, <:ragingpaul:1448752763164037295>, <:scaredcloudy:1448751027950977117>, <:thinking_preston:1448751103822004437>, <:tiredscout:1448751394881278043>, and <:Stormyandhopslogo:1448502746113118291>.";
             // --------------------------------------------------------------------------
             
             const result = await ai.models.generateContent({
@@ -368,16 +367,20 @@ client.on('interactionCreate', async (interaction) => {
 
             if (responseText.length > 2000) {
                 const shortenedResponse = responseText.substring(0, 1900) + '... (truncated)';
-                await interaction.editReply(`🤖 **AI Response (Truncated):**\n\n${shortenedResponse}`);
+                // --- Updated Response Format ---
+                await interaction.editReply(`🐰 **Hopper response (Truncated):**\n\n${shortenedResponse}`);
             } else {
-                await interaction.editReply(`🤖 **AI Response:**\n\n${responseText}`);
+                // --- Updated Response Format ---
+                await interaction.editReply(`🐰 **Hopper response:**\n\n${responseText}`);
             }
         } catch (error) {
             if (error.message && error.message.includes('SAFETY')) {
                 await interaction.editReply('❌ My generated response was blocked by the safety filter. Please try a different prompt.');
             } else {
                 console.error('Gemini API Error:', error);
-                await interaction.editReply('❌ I had trouble generating a response from the AI. Check the console for errors.');
+                // --- Updated Error Message with Emojis ---
+                const timePlaceholder = "3:00 PM EST 12/12/2025"; 
+                await interaction.editReply(`<:scaredcloudy:1448751027950977117> uh-oh I am unable to get information right now please wait until [Your time: ${timePlaceholder}] <:heartkatie:1448751305756639372>`);
             }
         }
         return;
