@@ -30,12 +30,17 @@ if (!process.env.TOKEN) {
   process.exit(1);
 }
 
-// --- AI Key Check ---
-if (!process.env.GEMINI_API_KEY) {
-  console.error("❌ GEMINI_API_KEY not found. Add GEMINI_API_KEY in Render Environment Variables to enable AI.");
-  process.exit(1);
+// ====================== 🟢 CRITICAL FIX APPLIED HERE 🟢 ======================
+// --- AI Key Check & Conditional Initialization ---
+let ai;
+let AI_ENABLED = !!process.env.GEMINI_API_KEY; // Use let for AI_ENABLED if needed for error fallback
+
+if (!AI_ENABLED) {
+  console.error("❌ GEMINI_API_KEY not found. AI commands (/ask) and AI moderation are DISABLED. The bot will run, but with reduced functionality/safety.");
+} else {
+    // Note: The actual initialization happens further down in the AI config block.
 }
-// --------------------
+// ------------------------------------------------------------------------------
 
 // ====================== 🟢 CRITICAL FIX: CLIENT INITIALIZATION 🟢 ======================
 const client = new Client({
@@ -233,7 +238,7 @@ function filterMessageManually(text) {
     let severeMatch = checkNormalizedText(SEVERE_WORDS, normalized) || checkNormalizedText(SEVERE_WORDS, leetNormalized);
     if (severeMatch) return { isSevere: true, isMild: false, matchedWord: severeMatch };
 
-    let mildMatch = checkNormalizedText(MILD_BAD_WORDS, normalized) || checkNormalizedText(MILD_WORDS, leetNormalized);
+    let mildMatch = checkNormalizedText(MILD_BAD_WORDS, normalized) || checkNormalizedText(MILD_BAD_WORDS, leetNormalized);
     if (mildMatch) return { isSevere: false, isMild: true, matchedWord: mildMatch };
     
     return { isSevere: false, isMild: false, matchedWord: null };
@@ -251,10 +256,21 @@ const safetySettings = [
   },
 ];
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// Only initialize AI client if key is present (ai is declared globally at the top)
+if (AI_ENABLED) {
+    try {
+        ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    } catch (e) {
+        console.error("❌ Failed to initialize GoogleGenAI. AI will be disabled.", e);
+        AI_ENABLED = false; 
+    }
+}
 const aiModel = 'gemini-2.5-flash';
 
 async function checkMessageToxicity(text) {
+  // NEW: Check if AI is enabled. If not, bypass the API call and return safe status.
+  if (!AI_ENABLED) return { isToxic: false, blockCategory: 'AI_DISABLED' }; 
+
   if (text.length === 0) return { isToxic: false, blockCategory: 'None' };
   
   try {
@@ -512,9 +528,13 @@ client.on('interactionCreate', async (interaction) => {
     // --- Basic Commands ---
     if (interaction.commandName === 'say') {
       const text = interaction.options.getString('text');
-      const { isToxic } = await checkMessageToxicity(text);
-      if (isToxic) return interaction.reply({ content: "❌ That message violates the Hopper content filter.", ephemeral: true });
       
+      // Only check toxicity if AI is enabled
+      if (AI_ENABLED) {
+        const { isToxic } = await checkMessageToxicity(text);
+        if (isToxic) return interaction.reply({ content: "❌ That message violates the Hopper content filter.", ephemeral: true });
+      }
+
       await interaction.channel.send(text);
       return interaction.reply({ content: "✅ Sent anonymously", ephemeral: true });
     }
@@ -528,13 +548,18 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.editReply('❌ Your question contains inappropriate language and was blocked by the Hopper filter.');
         }
 
+        // NEW CHECK: Block /ask command if AI is disabled
+        if (!AI_ENABLED) {
+             return interaction.editReply('❌ The AI search feature is currently disabled because the `GEMINI_API_KEY` is missing. Please contact a server admin.');
+        }
+
         const { isToxic: promptIsToxic } = await checkMessageToxicity(prompt);
         if (promptIsToxic) {
              return interaction.editReply('❌ Your request was blocked by the safety filter. Please rephrase your question.');
         }
 
         try {
-            const systemInstruction = "You are the character Hops Bunny, an assistant for the 'Stormy and Hops' Discord server. You MUST use Google Search for grounding, but you are strictly limited to ONLY providing information found on the following official and fandom sources: stormy-and-hops.fandom.com, stormyandhops.netlify.app, X.com/stormyandhops, X.com/bunnytoonsstudios, and YouTube.com/stormyandhops. DO NOT use any other external information source. Your answers must be about the Stormy and Hops universe only. Maintain a friendly, server-appropriate 'Hopper' tone, and incorporate the provided custom server emojis into your responses when appropriate: <:MrLuck:1448751843885842623>, <:cheeringstormy:1448751467400790206>, <:concerdnedjin:1448751740030816481>, <:happymissdiamond:1448752668259647619>, <:heartkatie:1448751305756639372>, <:madscarlet:1448751667863355482>, <:mischevousoscar:1448752833951305789>, <:questioninghops:1448751559067308053>, <:ragingpaul:1448752763164037295>, <:scaredcloudy:1448751027950977117>, <:thinking_preston:1448751103822004437>, <:tiredscout:1448751394881278043>, and <:Stormyandhopslogo:1448502746113118291>.";
+            const systemInstruction = "You are the character Hops Bunny, an assistant for the 'Stormy and Hops' Discord server. You MUST use Google Search for grounding, but you are strictly limited to ONLY providing information found on the following official and fandom sources: stormy-and-hops.fandom.com, stormyandhops.netlify.app, X.com/stormyandhops, X.com/bunnytoonsstudios, and YouTube.com/stormyandhops. DO NOT use any other external information source. Your answers must be about the Stormy and Hops universe only. Maintain a friendly, server-appropriate 'Hopper' tone, and incorporate the provided custom server emojis into your responses when appropriate: <:MrLuck:1448751843885842623>, <:cheeringstormy:1448751467400790206>, <:concerdnedjin:1448751740030816481>, <:happymissdiamond:1448752668259647619>, <:heartkatie:1448751305756639373>, <:madscarlet:1448751667863355482>, <:mischevousoscar:1448752833951305789>, <:questioninghops:1448751559067308053>, <:ragingpaul:1448752763164037295>, <:scaredcloudy:1448751027950977117>, <:thinking_preston:1448751103822004437>, <:tiredscout:1448751394881278043>, and <:Stormyandhopslogo:1448502746113118291>.";
             
             const result = await ai.models.generateContent({
                 model: aiModel,
@@ -560,7 +585,7 @@ client.on('interactionCreate', async (interaction) => {
             } else {
                 console.error('Gemini API Error:', error);
                 const timePlaceholder = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }); 
-                await interaction.editReply(`<:scaredcloudy:1448751027950977117> uh-oh I am unable to get information right now please wait until [Your time: ${timePlaceholder}] <:heartkatie:1448751305756639372>`);
+                await interaction.editReply(`<:scaredcloudy:1448751027950977117> uh-oh I am unable to get information right now please wait until [Your time: ${timePlaceholder}] <:heartkatie:1448751305756639373>`);
             }
         }
         return;
@@ -1057,53 +1082,6 @@ client.on('messageCreate', async (message) => {
     // Check if message is a pure GIF/image link (to allow them without filtering)
     const isPureGIFLink = lowerContent.match(/(http(s)?:\/\/(?:i\.)?imgur\.com\/\S+|http(s)?:\/\/gfycat\.com\/\S+|http(s)?:\/\/\S+\.(png|jpe?g|gif))/i) && message.content.split(/\s/).length === 1;
 
-    // --- NEW FANART CHANNEL RULE (Rule 0) ---
-    // Rule: If in TARGET_CHANNEL_ID, message must have an attachment if it has any text.
-    if (message.channel.id === TARGET_CHANNEL_ID) {
-        // Condition: Text is present (non-whitespace) AND no attachment is present
-        if (message.content.trim().length > 0 && message.attachments.size === 0) {
-             await message.delete().catch(() => {});
-             const log = client.channels.cache.get(LOG_CHANNEL_ID);
-             if (log) log.send(`🖼️ **Fanart Channel Rule Violation (Deleted)**\nUser: <@${message.author.id}>\nChannel: <#${TARGET_CHANNEL_ID}>\nReason: Text-only message without attachment.\nContent: ||${message.content}||`);
-             return; // Stop processing the message
-        }
-        
-        // New Logic: If the message passed the text-only check, it must have an image (attachments.size > 0 or pure GIF link)
-        // If it has an image (with or without text), perform auto-reaction and post controls.
-        if (message.attachments.size > 0 || isPureGIFLink) {
-            
-            // 1. Auto-React with ✨
-            await message.react('✨').catch(e => console.error("Failed to react with ✨:", e));
-            
-            // 2. Create thread and post control buttons
-            try {
-                // Define Buttons (using existing custom IDs)
-                const threadControlRow = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId('archive_thread').setLabel('Archive Post').setStyle(ButtonStyle.Secondary),
-                    new ButtonBuilder().setCustomId('edit_title').setLabel('Edit Title').setStyle(ButtonStyle.Secondary)
-                );
-                
-                // Create a thread on the message
-                const thread = await message.startThread({
-                    name: `🎨 ${message.member.displayName}'s Fanart`,
-                    autoArchiveDuration: 1440, // 24 hours
-                });
-                
-                // Send the buttons into the newly created thread
-                await thread.send({ 
-                    content: `Hello ${message.author.toString()}! This thread has been automatically created for your fanart post. Use the buttons below to manage your post's thread:\n\n*Click "Archive Post" to hide the thread.\n*Click "Edit Title" to rename the thread's title (send the new title as a message).*`, 
-                    components: [threadControlRow] 
-                });
-                
-            } catch (e) {
-                console.error("Failed to create thread and/or send buttons:", e);
-                const log = client.channels.cache.get(LOG_CHANNEL_ID);
-                if (log) log.send(`⚠️ Failed to create thread/buttons for fanart post by <@${message.author.id}>.`);
-            }
-        }
-    }
-    // --- END NEW FANART CHANNEL RULE ---
-
     // --- MANUAL WORD FILTER CHECK (FIRST LAYER DEFENSE) ---
     const manualFilter = filterMessageManually(content);
     
@@ -1136,53 +1114,63 @@ client.on('messageCreate', async (message) => {
     const { isToxic, blockCategory } = await checkMessageToxicity(content);
     // ------------------------------------------------
 
-    // RULE: INAPPROPRIATE RP LOCKDOWN (If toxicity is detected in the RP channel)
-    if (message.channel.id === RP_CHANNEL_ID && isToxic) {
-        const category = message.guild.channels.cache.get(RP_CATEGORY_ID);
-        if (category && category.type === 4) {
-            try {
-                // Lock the entire category
-                const everyoneRole = message.guild.roles.cache.find(r => r.name === '@everyone');
-                if (everyoneRole) {
-                    await category.permissionOverwrites.edit(everyoneRole, { ViewChannel: false });
+    // Skip AI-dependent moderation if AI is explicitly disabled
+    if (blockCategory !== 'AI_DISABLED') { 
+
+        // RULE: INAPPROPRIATE RP LOCKDOWN (If toxicity is detected in the RP channel)
+        if (message.channel.id === RP_CHANNEL_ID && isToxic) {
+            const category = message.guild.channels.cache.get(RP_CATEGORY_ID);
+            if (category && category.type === 4) {
+                try {
+                    // Lock the entire category
+                    const everyoneRole = message.guild.roles.cache.find(r => r.name === '@everyone');
+                    if (everyoneRole) {
+                        await category.permissionOverwrites.edit(everyoneRole, { ViewChannel: false });
+                    }
+                    await message.delete().catch(() => {});
+                    
+                    const log = client.channels.cache.get(LOG_CHANNEL_ID);
+                    if (log) log.send(`🔒 **RP Category Lockdown**\nCategory <#${RP_CATEGORY_ID}> locked down due to inappropriate RP attempt by <@${message.author.id}> in <#${RP_CHANNEL_ID}>.\nHopper AI Reason: ${blockCategory}\nMessage: ||${message.content}||`);
+                    return;
+                } catch (e) {
+                    console.error("Failed to lock RP category:", e);
+                    message.channel.send(`⚠️ WARNING: Inappropriate content detected in <#${RP_CHANNEL_ID}>. Category lockdown failed. Manually review <@${message.author.id}>.`);
                 }
-                await message.delete().catch(() => {});
-                
-                const log = client.channels.cache.get(LOG_CHANNEL_ID);
-                if (log) log.send(`🔒 **RP Category Lockdown**\nCategory <#${RP_CATEGORY_ID}> locked down due to inappropriate RP attempt by <@${message.author.id}> in <#${RP_CHANNEL_ID}>.\nHopper AI Reason: ${blockCategory}\nMessage: ||${message.content}||`);
-                return;
-            } catch (e) {
-                console.error("Failed to lock RP category:", e);
-                message.channel.send(`⚠️ WARNING: Inappropriate content detected in <#${RP_CHANNEL_ID}>. Category lockdown failed. Manually review <@${message.author.id}>.`);
             }
         }
-    }
+
+        // --- START GENERAL MODERATION BLOCK (AI-dependent parts) ---
+        if (message.channel.id !== TARGET_CHANNEL_ID && !isPureGIFLink) { 
+            
+            // --- AI MODERATION ACTION (TIMEOUT FOR GENERAL TOXICITY/SLURS MISSED BY MANUAL FILTER) ---
+            if (isToxic) {
+                await message.delete().catch(() => {});
+                try {
+                    // Apply 10 minute timeout for general toxicity
+                    if (member && member.manageable) {
+                        await member.timeout(10 * 60 * 1000, `AI toxicity detection: ${blockCategory}`);
+                    }
+                    const log = client.channels.cache.get(LOG_CHANNEL_ID);
+                    if (log) log.send(`⚠️ **AI Filter Violation (TIMEOUT)**\nUser: <@${message.author.id}>\nAction: 10m Timeout\nReason: AI Filter Match: ${blockCategory}\nContent: ||${message.content}||`);
+                    return;
+                } catch (e) {
+                    console.error("Failed to apply AI moderation timeout:", e);
+                }
+                return;
+            }
+        }
+        // --- END AI-DEPENDENT MODERATION BLOCK ---
+
+    } // End AI_DISABLED check
 
     // RULE 5: INAPPROPRIATE USERNAME CHECK (on message send - always runs)
     if (member) {
         await moderateNickname(member);
     }
-
-    // --- START GENERAL MODERATION BLOCK ---
+    
+    // --- START GENERAL MODERATION BLOCK (Manual/Regex-based parts) ---
     if (message.channel.id !== TARGET_CHANNEL_ID && !isPureGIFLink) { 
         
-        // --- AI MODERATION ACTION (TIMEOUT FOR GENERAL TOXICITY/SLURS MISSED BY MANUAL FILTER) ---
-        if (isToxic) {
-            await message.delete().catch(() => {});
-            try {
-                // Apply 10 minute timeout for general toxicity
-                if (member && member.manageable) {
-                    await member.timeout(10 * 60 * 1000, `AI toxicity detection: ${blockCategory}`);
-                }
-                const log = client.channels.cache.get(LOG_CHANNEL_ID);
-                if (log) log.send(`⚠️ **AI Filter Violation (TIMEOUT)**\nUser: <@${message.author.id}>\nAction: 10m Timeout\nReason: AI Filter Match: ${blockCategory}\nContent: ||${message.content}||`);
-                return;
-            } catch (e) {
-                console.error("Failed to apply AI moderation timeout:", e);
-            }
-            return;
-        }
-
         // RULE 6: ANTI-ADVERTISING FILTER
         const externalAdRegex = /(discord\.gg|patreon\.com|twitch\.tv|youtube\.com\/c\/|t\.me\/|cash\.app)/i;
         const allowedAds = /(stormyandhops\.fandom\.com|stormyandhops\.netlify\.app|x\.com\/stormyandhops|x\.com\/bunnytoonsstudios|youtube\.com\/stormyandhops)/i;
@@ -1322,5 +1310,4 @@ http.createServer((req, res) => {
     res.end('Hopper Bot is Running!\n');
 }).listen(PORT, () => {
     console.log(`Web server listening on port ${PORT}`);
-
-}
+});
