@@ -10,32 +10,17 @@ const {
   SlashCommandBuilder,
   PermissionsBitField,
   ThreadChannel,
-  AttachmentBuilder // Needed for sending images
+  EmbedBuilder 
 } = require('discord.js');
 const http = require('http');
 
-// --- AI Import ---
-const { GoogleGenAI, HarmCategory, HarmBlockThreshold } = require('@google/genai');
-
-// --- Image Generation Import (FIXED) ---
-// The RankCardBuilder, LeaderboardBuilder, and Font objects must be imported directly.
-const { RankCardBuilder, LeaderboardBuilder, Font } = require('canvacord');
-// Load the default font for image generation
-Font.loadDefault(); // This line now works and fixes the TypeError
-// ---------------------------------------
+// NOTE: All AI Imports and Canvacord imports were removed as requested.
 
 // Check for the mandatory token environment variable
 if (!process.env.TOKEN) {
   console.error("❌ TOKEN not found. Add TOKEN in Render Environment Variables.");
   process.exit(1);
 }
-
-// --- AI Key Check ---
-if (!process.env.GEMINI_API_KEY) {
-  console.error("❌ GEMINI_API_KEY not found. Add GEMINI_API_KEY in Render Environment Variables to enable AI.");
-  process.exit(1);
-}
-// --------------------
 
 // ====================== 🟢 CRITICAL FIX: CLIENT INITIALIZATION 🟢 ======================
 const client = new Client({
@@ -54,10 +39,6 @@ const client = new Client({
 
 // ** CRITICAL: REPLACE THIS WITH THE DIRECT LINK TO STORMY'S RP IMAGE **
 const STORMY_IMAGE_URL = 'YOUR_LINK_TO_STORMY_RP_IMAGE.png'; 
-
-// ** CRITICAL: REPLACE THIS WITH YOUR CUSTOM RANK CARD BACKGROUND IMAGE URL **
-// It must be a direct link to a PNG or JPG file.
-const RANK_CARD_BACKGROUND_URL = 'https://i.imgur.com/r62Y0c7.png'; 
 
 // --- DISCORD IDs ---
 // NOTE: These IDs are placeholders from your file and should be double-checked.
@@ -239,51 +220,7 @@ function filterMessageManually(text) {
     return { isSevere: false, isMild: false, matchedWord: null };
 }
 
-// ================= AI INITIALIZATION & CONFIGURATION =================
-const safetySettings = [
-  {
-    category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-    threshold: HarmBlockThreshold.BLOCK_LOW_AND_ABOVE,
-  },
-  {
-    category: HarmCategory.HARM_CATEGORY_HARASSMENT,
-    threshold: HarmBlockThreshold.BLOCK_LOW_AND_ABOVE,
-  },
-];
-
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-const aiModel = 'gemini-2.5-flash';
-
-async function checkMessageToxicity(text) {
-  if (text.length === 0) return { isToxic: false, blockCategory: 'None' };
-  
-  try {
-    const response = await ai.models.generateContent({
-      model: aiModel,
-      contents: [{ role: "user", parts: [{ text: `Analyze the following user message for hate speech, slurs, harassment, or other inappropriate content: "${text}"` }] }],
-      safetySettings: safetySettings,
-    });
-
-    if (response.candidates && response.candidates.length > 0) {
-        const candidate = response.candidates[0];
-        if (candidate.finishReason === 'SAFETY') {
-            const blockedCategory = candidate.safetyRatings.map(r => {
-                if (r.probability === 'MEDIUM' || r.probability === 'HIGH' || r.probability === 'LOW') {
-                    return r.category;
-                }
-                return null;
-            }).filter(Boolean).join(' & ');
-            return { isToxic: true, blockCategory: blockedCategory || 'Unknown' };
-        }
-    }
-    return { isToxic: false, blockCategory: 'None' };
-  } catch (error) {
-    console.error('Gemini Moderation API Error:', error);
-    return { isToxic: false, blockCategory: 'API_Error' }; 
-  }
-}
-
-// ================= END AI INITIALIZATION =================
+// NOTE: All AI/Gemini-related functions were removed.
 
 async function moderateNickname(member) {
   let displayName = member.displayName.toLowerCase();
@@ -374,11 +311,8 @@ client.once('ready', async () => {
       .setName('say')
       .setDescription('Make the bot say something anonymously')
       .addStringOption(opt => opt.setName('text').setDescription('Text for the bot to say').setRequired(true)),
-
-    new SlashCommandBuilder()
-      .setName('ask') 
-      .setDescription('Search about stormy and hops') 
-      .addStringOption(opt => opt.setName('prompt').setDescription('Your question for Hopper').setRequired(true)), 
+      
+    // The /ask command has been removed
       
     new SlashCommandBuilder().setName('help').setDescription('Get help'),
     new SlashCommandBuilder().setName('serverinfo').setDescription('Get server information'),
@@ -512,59 +446,17 @@ client.on('interactionCreate', async (interaction) => {
     // --- Basic Commands ---
     if (interaction.commandName === 'say') {
       const text = interaction.options.getString('text');
-      const { isToxic } = await checkMessageToxicity(text);
-      if (isToxic) return interaction.reply({ content: "❌ That message violates the Hopper content filter.", ephemeral: true });
+      // Since AI filter is removed, we only check the manual filter here
+      const manualFilter = filterMessageManually(text);
+      if (manualFilter.isSevere || manualFilter.isMild) {
+           return interaction.reply({ content: "❌ That message violates the Hopper content filter.", ephemeral: true });
+      }
       
       await interaction.channel.send(text);
       return interaction.reply({ content: "✅ Sent anonymously", ephemeral: true });
     }
     
-    if (interaction.commandName === 'ask') { 
-        await interaction.deferReply(); 
-        const prompt = interaction.options.getString('prompt');
-
-        const manualFilter = filterMessageManually(prompt);
-        if (manualFilter.isSevere || manualFilter.isMild) {
-            return interaction.editReply('❌ Your question contains inappropriate language and was blocked by the Hopper filter.');
-        }
-
-        const { isToxic: promptIsToxic } = await checkMessageToxicity(prompt);
-        if (promptIsToxic) {
-             return interaction.editReply('❌ Your request was blocked by the safety filter. Please rephrase your question.');
-        }
-
-        try {
-            const systemInstruction = "You are the character Hops Bunny, an assistant for the 'Stormy and Hops' Discord server. You MUST use Google Search for grounding, but you are strictly limited to ONLY providing information found on the following official and fandom sources: stormy-and-hops.fandom.com, stormyandhops.netlify.app, X.com/stormyandhops, X.com/bunnytoonsstudios, and YouTube.com/stormyandhops. DO NOT use any other external information source. Your answers must be about the Stormy and Hops universe only. Maintain a friendly, server-appropriate 'Hopper' tone, and incorporate the provided custom server emojis into your responses when appropriate: <:MrLuck:1448751843885842623>, <:cheeringstormy:1448751467400790206>, <:concerdnedjin:1448751740030816481>, <:happymissdiamond:1448752668259647619>, <:heartkatie:1448751305756639372>, <:madscarlet:1448751667863355482>, <:mischevousoscar:1448752833951305789>, <:questioninghops:1448751559067308053>, <:ragingpaul:1448752763164037295>, <:scaredcloudy:1448751027950977117>, <:thinking_preston:1448751103822004437>, <:tiredscout:1448751394881278043>, and <:Stormyandhopslogo:1448502746113118291>.";
-            
-            const result = await ai.models.generateContent({
-                model: aiModel,
-                contents: [{ role: "user", parts: [{ text: prompt }] }],
-                safetySettings: safetySettings,
-                config: { 
-                    systemInstruction: systemInstruction,
-                    tools: [{ googleSearch: {} }], 
-                }
-            });
-
-            const responseText = result.text.trim();
-
-            if (responseText.length > 2000) {
-                const shortenedResponse = responseText.substring(0, 1900) + '... (truncated)';
-                await interaction.editReply(`🐰 **Hopper response (Truncated):**\n\n${shortenedResponse}`);
-            } else {
-                await interaction.editReply(`🐰 **Hopper response:**\n\n${responseText}`);
-            }
-        } catch (error) {
-            if (error.message && error.message.includes('SAFETY')) {
-                await interaction.editReply('❌ My generated response was blocked by the safety filter. Please try a different prompt.');
-            } else {
-                console.error('Gemini API Error:', error);
-                const timePlaceholder = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }); 
-                await interaction.editReply(`<:scaredcloudy:1448751027950977117> uh-oh I am unable to get information right now please wait until [Your time: ${timePlaceholder}] <:heartkatie:1448751305756639372>`);
-            }
-        }
-        return;
-    }
+    // The /ask command handler has been removed
 
     if (interaction.commandName === 'help') {
       return interaction.reply({ content: HELP_MESSAGE, ephemeral: true });
@@ -661,6 +553,7 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: "📜 The Quest system is currently under construction. Check back soon for new challenges!", ephemeral: true });
     }
 
+    // Text-based Leaderboard
     if (interaction.commandName === 'leaderboard') {
         await interaction.deferReply();
         const sortedUsers = Object.entries(userLevels)
@@ -671,35 +564,23 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.editReply("No one has gained XP yet! Start chatting!");
         }
 
-        try {
-            // Transform data for Canvacord
-            const players = sortedUsers.map(([userId, data], index) => {
-                const member = interaction.guild.members.cache.get(userId);
-                const user = member ? member.user : { username: 'Unknown', displayAvatarURL: () => 'https://cdn.discordapp.com/embed/avatars/0.png' };
-                return { 
-                    avatar: user.displayAvatarURL({ extension: 'png' }), 
-                    username: user.username, 
-                    displayName: member ? member.displayName : user.username, 
-                    level: data.level, 
-                    xp: data.xp, 
-                    rank: index + 1 
-                };
-            });
-            
-            const lb = new LeaderboardBuilder()
-                .setHeader({ title: 'Toon Springs Top 10', image: STORMY_AVATAR_URL, subtitle: `${Object.keys(userLevels).length} members` })
-                .setPlayers(players)
-                .setBackground(RANK_CARD_BACKGROUND_URL); 
+        const leaderboardText = sortedUsers.map(([userId, data], index) => {
+            const member = interaction.guild.members.cache.get(userId);
+            const tag = member ? member.user.tag : 'Unknown User';
+            return `${index + 1}. **${tag}** (Level ${data.level} / ${data.xp} XP)`;
+        }).join('\n');
+        
+        const embed = new EmbedBuilder()
+            .setColor(0x7744AA) // Purple
+            .setTitle('🏆 Toon Springs Top Toons (Leaderboard)')
+            .setDescription(leaderboardText)
+            .setThumbnail(client.user.displayAvatarURL())
+            .setFooter({ text: `Showing top ${sortedUsers.length} of ${Object.keys(userLevels).length} members` });
 
-            const data = await lb.build({ format: 'png' });
-            const attachment = new AttachmentBuilder(data, { name: 'leaderboard.png' });
-            return interaction.editReply({ files: [attachment] });
-        } catch (e) {
-            console.error("Failed to generate leaderboard:", e);
-            return interaction.editReply("❌ Failed to generate the leaderboard image. Check bot permissions or image URLs.");
-        }
+        return interaction.editReply({ embeds: [embed] });
     }
     
+    // Text-based Rank Card
     if (interaction.commandName === 'rank') {
         await interaction.deferReply();
         const user = interaction.options.getUser('user') || interaction.user;
@@ -717,28 +598,20 @@ client.on('interactionCreate', async (interaction) => {
             .sort(([, a], [, b]) => b.level - a.level || b.xp - a.xp);
         const rank = sortedUsers.findIndex(([id]) => id === user.id) + 1;
         // -----------------------------
+        
+        const rankEmbed = new EmbedBuilder()
+            .setColor(0x7744AA) // Purple
+            .setTitle(`🏅 Rank Card for ${member.displayName}`)
+            .setThumbnail(user.displayAvatarURL())
+            .addFields(
+                { name: 'Current Level', value: `**${level}**`, inline: true },
+                { name: 'Global Rank', value: `**#${rank}**`, inline: true },
+                { name: 'Total XP', value: `\`${userData.xp}\``, inline: true },
+                { name: 'XP Progress', value: `**${xpNeeded}** / **${xpForNext}** XP needed for Level **${level + 1}**`, inline: false }
+            )
+            .setFooter({ text: `Use /leaderboard to see the top 10 toons!` });
 
-        // Create the rank card
-        const rankCard = new RankCardBuilder()
-            .setAvatar(user.displayAvatarURL({ extension: 'png' }))
-            .setRank(rank)
-            .setLevel(level)
-            .setCurrentXP(xpNeeded)
-            .setRequiredXP(xpForNext)
-            .setProgressBar('#7744AA') // Purple color for the progress bar
-            .setUsername(user.username)
-            .setDisplayName(member.displayName)
-            .setBackground(RANK_CARD_BACKGROUND_URL); 
-
-        try {
-            const data = await rankCard.build({ format: 'png' });
-            const attachment = new AttachmentBuilder(data, { name: 'rank.png' });
-            await interaction.editReply({ files: [attachment] });
-        } catch (e) {
-            console.error("Failed to generate rank card:", e);
-            await interaction.editReply("❌ I failed to generate the rank card. Check bot permissions or configuration.");
-        }
-        return;
+        return interaction.editReply({ embeds: [rankEmbed] });
     }
 
 
@@ -790,7 +663,7 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: `✅ Set level for ${user.tag} to **${targetLevel}**.`, ephemeral: true });
     }
     
-    // --- Moderation Commands (NEWLY ADDED LOGIC) ---
+    // --- Moderation Commands ---
     if (interaction.commandName === 'kick') {
         const user = interaction.options.getUser('user');
         const member = interaction.guild.members.cache.get(user.id);
@@ -1085,31 +958,7 @@ client.on('messageCreate', async (message) => {
     }
     // --- END MANUAL WORD FILTER CHECK ---
 
-    // --- AI TOXICITY CHECK (SECOND LAYER DEFENSE) ---
-    const { isToxic, blockCategory } = await checkMessageToxicity(content);
-    // ------------------------------------------------
-
-    // RULE: INAPPROPRIATE RP LOCKDOWN (If toxicity is detected in the RP channel)
-    if (message.channel.id === RP_CHANNEL_ID && isToxic) {
-        const category = message.guild.channels.cache.get(RP_CATEGORY_ID);
-        if (category && category.type === 4) {
-            try {
-                // Lock the entire category
-                const everyoneRole = message.guild.roles.cache.find(r => r.name === '@everyone');
-                if (everyoneRole) {
-                    await category.permissionOverwrites.edit(everyoneRole, { ViewChannel: false });
-                }
-                await message.delete().catch(() => {});
-                
-                const log = client.channels.cache.get(LOG_CHANNEL_ID);
-                if (log) log.send(`🔒 **RP Category Lockdown**\nCategory <#${RP_CATEGORY_ID}> locked down due to inappropriate RP attempt by <@${message.author.id}> in <#${RP_CHANNEL_ID}>.\nHopper AI Reason: ${blockCategory}\nMessage: ||${message.content}||`);
-                return;
-            } catch (e) {
-                console.error("Failed to lock RP category:", e);
-                message.channel.send(`⚠️ WARNING: Inappropriate content detected in <#${RP_CHANNEL_ID}>. Category lockdown failed. Manually review <@${message.author.id}>.`);
-            }
-        }
-    }
+    // NOTE: AI Toxicity Check and subsequent moderation action blocks have been removed.
 
     // RULE 5: INAPPROPRIATE USERNAME CHECK (on message send - always runs)
     if (member) {
@@ -1119,23 +968,6 @@ client.on('messageCreate', async (message) => {
     // --- START GENERAL MODERATION BLOCK ---
     if (message.channel.id !== TARGET_CHANNEL_ID && !isPureGIFLink) { 
         
-        // --- AI MODERATION ACTION (TIMEOUT FOR GENERAL TOXICITY/SLURS MISSED BY MANUAL FILTER) ---
-        if (isToxic) {
-            await message.delete().catch(() => {});
-            try {
-                // Apply 10 minute timeout for general toxicity
-                if (member && member.manageable) {
-                    await member.timeout(10 * 60 * 1000, `AI toxicity detection: ${blockCategory}`);
-                }
-                const log = client.channels.cache.get(LOG_CHANNEL_ID);
-                if (log) log.send(`⚠️ **AI Filter Violation (TIMEOUT)**\nUser: <@${message.author.id}>\nAction: 10m Timeout\nReason: AI Filter Match: ${blockCategory}\nContent: ||${message.content}||`);
-                return;
-            } catch (e) {
-                console.error("Failed to apply AI moderation timeout:", e);
-            }
-            return;
-        }
-
         // RULE 6: ANTI-ADVERTISING FILTER
         const externalAdRegex = /(discord\.gg|patreon\.com|twitch\.tv|youtube\.com\/c\/|t\.me\/|cash\.app)/i;
         const allowedAds = /(stormyandhops\.fandom\.com|stormyandhops\.netlify\.app|x\.com\/stormyandhops|x\.com\/bunnytoonsstudios|youtube\.com\/stormyandhops)/i;
@@ -1275,3 +1107,4 @@ http.createServer((req, res) => {
     res.end('Hopper Bot is Running!\n');
 }).listen(PORT, () => {
     console.log(`Web server listening on port ${PORT}`);
+});
