@@ -61,7 +61,7 @@ const STORMY_AVATAR_URL = 'https://i.imgur.com/r62Y0c7.png';
 // --- DISCORD IDs ---
 const GUILD_ID = '1369477266958192720';
 const TARGET_CHANNEL_ID = '1415134887232540764'; // Image-only channel
-const LOG_CHANNEL_ID = '1414286807360602112';
+const LOG_CHANNEL_ID = '1414286807360602112'; // Moderation Logs
 const TRANSCRIPT_CHANNEL_ID = '1414354204079689849';
 const SETUP_POST_CHANNEL = '1445628128423579660';
 const RP_CHANNEL_ID = '1421219064985948346';
@@ -383,6 +383,8 @@ client.on('interactionCreate', async (interaction) => {
             
             try {
                 await member.roles.add(role);
+                const log = client.channels.cache.get(LOG_CHANNEL_ID);
+                if(log) log.send(`<:cheeringstormy:1448751467400790206> **Role Added**\nTarget: ${user.tag}\nRole: ${role.name}\nMod: ${interaction.user.tag}`);
                 return interaction.reply(`<:cheeringstormy:1448751467400790206> Added role ${role.name} to ${user.tag}`);
             } catch (e) {
                 return interaction.reply({ content: "<:scaredcloudy:1448751027950977117> Failed to add role (Check my permissions).", ephemeral: true });
@@ -453,6 +455,8 @@ client.on('interactionCreate', async (interaction) => {
             const user = interaction.options.getUser('user');
             const amt = interaction.options.getInteger('xp');
             await addXP(interaction.guild.members.cache.get(user.id), amt);
+            const log = client.channels.cache.get(LOG_CHANNEL_ID);
+            if(log) log.send(`<:cheeringstormy:1448751467400790206> **XP Given**\nTarget: ${user.tag}\nAmount: ${amt}\nMod: ${interaction.user.tag}`);
             return interaction.reply(`✅ Gave ${amt} XP to ${user.tag}`);
         }
         if (interaction.commandName === 'takeawayxp') {
@@ -464,6 +468,8 @@ client.on('interactionCreate', async (interaction) => {
                 const { level } = calculateLevel(userLevels[userId].xp);
                 userLevels[userId].level = level;
             }
+            const log = client.channels.cache.get(LOG_CHANNEL_ID);
+            if(log) log.send(`<:concerdnedjin:1448751740030816481> **XP Removed**\nTarget: ${user.tag}\nAmount: ${amt}\nMod: ${interaction.user.tag}`);
             return interaction.reply(`✅ Took ${amt} XP from ${user.tag}`);
         }
         if (interaction.commandName === 'changelevel') {
@@ -474,31 +480,50 @@ client.on('interactionCreate', async (interaction) => {
             for (let l = 0; l < level; l++) totalXP += 5 * l * l + 50 * l + 100;
             userLevels[userId] = { xp: totalXP, level: level };
             await handleLevelRoles(interaction.guild.members.cache.get(userId), level);
+            const log = client.channels.cache.get(LOG_CHANNEL_ID);
+            if(log) log.send(`<:cheeringstormy:1448751467400790206> **Level Changed**\nTarget: ${user.tag}\nLevel: ${level}\nMod: ${interaction.user.tag}`);
             return interaction.reply(`✅ Set ${user.tag} to level ${level}`);
         }
 
         if (interaction.commandName === 'kick') {
             const user = interaction.options.getUser('user');
             const member = interaction.guild.members.cache.get(user.id);
-            if (member.kickable) { await member.kick(); return interaction.reply(`✅ Kicked ${user.tag}`); }
+            if (member.kickable) { 
+                await member.kick(); 
+                const log = client.channels.cache.get(LOG_CHANNEL_ID);
+                if(log) log.send(`<:ragingpaul:1448752763164037295> **User Kicked**\nTarget: ${user.tag}\nMod: ${interaction.user.tag}`);
+                return interaction.reply(`✅ Kicked ${user.tag}`); 
+            }
             return interaction.reply("❌ Cannot kick user.");
         }
         if (interaction.commandName === 'ban') {
             const user = interaction.options.getUser('user');
             const member = interaction.guild.members.cache.get(user.id);
-            if (member.bannable) { await member.ban(); return interaction.reply(`✅ Banned ${user.tag}`); }
+            if (member.bannable) { 
+                await member.ban(); 
+                const log = client.channels.cache.get(LOG_CHANNEL_ID);
+                if(log) log.send(`<:ragingpaul:1448752763164037295> **User Banned**\nTarget: ${user.tag}\nMod: ${interaction.user.tag}`);
+                return interaction.reply(`✅ Banned ${user.tag}`); 
+            }
             return interaction.reply("❌ Cannot ban user.");
         }
         if (interaction.commandName === 'unban') {
             const id = interaction.options.getString('userid');
             await interaction.guild.members.unban(id).catch(() => {});
+            const log = client.channels.cache.get(LOG_CHANNEL_ID);
+            if(log) log.send(`<:cheeringstormy:1448751467400790206> **User Unbanned**\nTarget ID: ${id}\nMod: ${interaction.user.tag}`);
             return interaction.reply(`✅ Unbanned ID ${id}`);
         }
         if (interaction.commandName === 'timeout') {
             const user = interaction.options.getUser('user');
             const mins = interaction.options.getInteger('minutes');
             const member = interaction.guild.members.cache.get(user.id);
-            if (member.manageable) { await member.timeout(mins * 60 * 1000); return interaction.reply(`✅ Timed out ${user.tag}`); }
+            if (member.manageable) { 
+                await member.timeout(mins * 60 * 1000); 
+                const log = client.channels.cache.get(LOG_CHANNEL_ID);
+                if(log) log.send(`<:concerdnedjin:1448751740030816481> **User Timeout**\nTarget: ${user.tag}\nDuration: ${mins}m\nMod: ${interaction.user.tag}`);
+                return interaction.reply(`✅ Timed out ${user.tag}`); 
+            }
             return interaction.reply("❌ Cannot timeout user.");
         }
 
@@ -558,13 +583,19 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.channel.delete();
         }
 
-        // --- NEW THREAD BUTTON LOGIC ---
+        // --- FIXED THREAD ARCHIVE BUTTON LOGIC ---
         if (interaction.customId === 'archive_thread') {
-             // Basic permission check (thread owner or mod)
              const thread = interaction.channel;
-             if (thread.isThread()) {
+             if (!thread || !thread.isThread()) {
+                 return interaction.reply({ content: "❌ This is not a thread.", ephemeral: true });
+             }
+             // Reply first to prevent timeout, then archive
+             await interaction.reply({ content: "🔒 Archiving thread...", ephemeral: true });
+             try {
                  await thread.setArchived(true);
-                 return interaction.reply({content: "Archived.", ephemeral: true});
+             } catch (e) {
+                 console.error(e);
+                 await interaction.followUp({ content: "❌ Failed to archive (Check Permissions).", ephemeral: true });
              }
         }
         if (interaction.customId === 'edit_title') {
