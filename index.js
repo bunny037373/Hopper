@@ -1,4 +1,4 @@
-// ====================== IMPORTS ======================
+// Import necessary modules
 const {
     Client,
     GatewayIntentBits,
@@ -10,8 +10,7 @@ const {
     SlashCommandBuilder,
     PermissionsBitField,
     ThreadChannel,
-    AttachmentBuilder,
-    EmbedBuilder // Added for text-based ranks
+    AttachmentBuilder
 } = require('discord.js');
 const http = require('http');
 const fs = require('fs');
@@ -19,18 +18,27 @@ const fs = require('fs');
 // --- AI Import ---
 const { GoogleGenAI, HarmCategory, HarmBlockThreshold } = require('@google/genai');
 
-// ====================== ENVIRONMENT CHECKS ======================
+// --- Image Generation Import ---
+const { RankCardBuilder, LeaderboardBuilder, Font } = require('canvacord');
+// Load default font
+try {
+    Font.loadDefault();
+} catch (e) {
+    console.log("Font load handled.");
+}
 
+// Check for the mandatory token environment variable
 if (!process.env.TOKEN) {
     console.error("❌ TOKEN not found. Add TOKEN in Environment Variables.");
     process.exit(1);
 }
 
+// --- AI Key Check ---
 let ai;
 let AI_ENABLED = !!process.env.GEMINI_API_KEY;
 
 if (!AI_ENABLED) {
-    console.warn("⚠️ GEMINI_API_KEY not found. AI commands (/ask) and AI moderation are DISABLED.");
+    console.error("❌ GEMINI_API_KEY not found. AI commands (/ask) and AI moderation are DISABLED.");
 } else {
     try {
         ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -40,12 +48,25 @@ if (!AI_ENABLED) {
     }
 }
 
+// ====================== CLIENT SETUP ======================
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildMessageReactions
+    ]
+});
+
 // ====================== CONFIGURATION ======================
 
-// ** IMAGE CONFIG (Local files only, no generation) **
-const STORMY_IMAGE_FILE = './stormy.png'; 
+// ** LOCAL IMAGE CONFIG **
+const STORMY_IMAGE_FILE = './stormy.png';
+const RANK_CARD_BACKGROUND_URL = 'https://i.imgur.com/r62Y0c7.png';
+const STORMY_AVATAR_URL = 'https://i.imgur.com/r62Y0c7.png';
 
-// ** DISCORD IDs **
+// --- DISCORD IDs ---
 const GUILD_ID = '1369477266958192720';
 const TARGET_CHANNEL_ID = '1415134887232540764';
 const LOG_CHANNEL_ID = '1414286807360602112';
@@ -56,7 +77,7 @@ const RP_CATEGORY_ID = '1446530920650899536';
 const AFK_XP_EXCLUSION_CHANNEL_ID = '1414352027034583080';
 const BOOSTER_ROLE_ID = '1400596498969923685';
 
-// ** XP SETTINGS **
+// --- LEVELING/XP CONFIGURATION ---
 const XP_COOLDOWN_MS = 60 * 1000;
 const DAILY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const XP_GAIN = 15;
@@ -71,6 +92,7 @@ const LEVEL_ROLES = {
     100: '1441563487565250692',
 };
 
+const NICKNAME_SCAN_INTERVAL = 5 * 1000;
 const HELP_MESSAGE = `hello! Do you need help?
 Please go to https://discord.com/channels/${GUILD_ID}/1414304297122009099
 and for more assistance please use
@@ -83,24 +105,12 @@ const dailyCooldown = new Map();
 const joinTracker = new Map();
 const afkStatus = new Map();
 
-// ====================== CLIENT SETUP ======================
-const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.GuildMessageReactions
-    ]
-});
-
 // ====================== HELPER FUNCTIONS ======================
 
 function calculateLevel(totalXp) {
     let level = 0;
     let xpRemaining = totalXp;
     let xpNeeded = 100;
-
     while (xpRemaining >= xpNeeded) {
         xpRemaining -= xpNeeded;
         level++;
@@ -113,7 +123,6 @@ async function handleLevelRoles(member, newLevel) {
     if (!member || !member.guild) return;
     const guild = member.guild;
     const levelKeys = Object.keys(LEVEL_ROLES).map(Number).sort((a, b) => b - a);
-
     try {
         let roleToAddId = null;
         for (const levelThreshold of levelKeys) {
@@ -122,20 +131,14 @@ async function handleLevelRoles(member, newLevel) {
                 break;
             }
         }
-
         for (const levelThreshold of levelKeys) {
             const roleId = LEVEL_ROLES[levelThreshold];
             const role = guild.roles.cache.get(roleId);
             if (!role) continue;
-
             if (roleId === roleToAddId) {
-                if (!member.roles.cache.has(roleId)) {
-                    await member.roles.add(role).catch(e => console.error(`Cannot add role ${roleId}:`, e));
-                }
+                if (!member.roles.cache.has(roleId)) await member.roles.add(role);
             } else {
-                if (member.roles.cache.has(roleId) && newLevel > levelThreshold) {
-                    await member.roles.remove(role).catch(e => console.error(`Cannot remove role ${roleId}:`, e));
-                }
+                if (member.roles.cache.has(roleId) && newLevel > levelThreshold) await member.roles.remove(role);
             }
         }
     } catch (e) {
@@ -147,23 +150,19 @@ async function addXP(member, xpAmount, message = null) {
     if (!member) return;
     const userId = member.id;
     if (!userLevels[userId]) userLevels[userId] = { xp: 0, level: 0 };
-
     const oldLevel = userLevels[userId].level;
     userLevels[userId].xp += xpAmount;
-
     const { level } = calculateLevel(userLevels[userId].xp);
     userLevels[userId].level = level;
-
     if (level > oldLevel) {
         if (message && message.channel) {
-            message.channel.send(`${member.toString()} wow toon! You are now level **${level}**!`).catch(() => {});
+            message.channel.send(`${member.toString()} wow toon! You are now level **${level}**!`);
         }
         await handleLevelRoles(member, level);
     }
 }
 
 // ====================== FILTER LOGIC ======================
-
 const ALLOWED_WORDS = ["assist", "assistance", "assistant", "associat", "class", "classic", "glass", "grass", "pass", "bass", "compass", "hello", "shell", "peacock", "cocktail", "babcock"];
 const MILD_BAD_WORDS = ["fuck", "f*ck", "f**k", "f-ck", "fck", "fu-", "f-", "f*cking", "fucking", "shit", "s*it", "s**t", "sh!t", "ass", "bitch", "hoe", "whore", "slut", "cunt", "dick", "pussy", "cock", "bastard", "sexy"];
 const SEVERE_WORDS = ["nigger", "nigga", "niga", "faggot", "fag", "dyke", "tranny", "chink", "kike", "paki", "gook", "spic", "beaner", "coon", "retard", "spastic", "mong", "autist", "kys", "kill yourself", "suicide", "rape", "molest", "hitler", "nazi", "kkk"];
@@ -174,7 +173,6 @@ function filterMessageManually(text) {
     if (!text) return { isSevere: false, isMild: false };
     let normalized = text.toLowerCase().replace(/[^a-z0-9]/g, '');
     let leetNormalized = normalized.split('').map(char => LEET_MAP[char] || char).join('');
-
     const checkNormalizedText = (list, normText) => {
         for (const badWord of list) {
             if (normText.includes(badWord)) {
@@ -184,33 +182,29 @@ function filterMessageManually(text) {
         }
         return null;
     };
-
     let severeMatch = checkNormalizedText(SEVERE_WORDS, normalized) || checkNormalizedText(SEVERE_WORDS, leetNormalized);
     if (severeMatch) return { isSevere: true, isMild: false, matchedWord: severeMatch };
-
     let mildMatch = checkNormalizedText(MILD_BAD_WORDS, normalized) || checkNormalizedText(MILD_BAD_WORDS, leetNormalized);
     if (mildMatch) return { isSevere: false, isMild: true, matchedWord: mildMatch };
-
     return { isSevere: false, isMild: false, matchedWord: null };
 }
 
-const aiModel = 'gemini-2.5-flash';
+// ================= AI CONFIG =================
 const safetySettings = [
     { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_LOW_AND_ABOVE },
     { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_LOW_AND_ABOVE },
 ];
+const aiModel = 'gemini-2.5-flash';
 
 async function checkMessageToxicity(text) {
     if (!AI_ENABLED) return { isToxic: false, blockCategory: 'AI_DISABLED' };
     if (!text || text.length === 0) return { isToxic: false, blockCategory: 'None' };
-
     try {
         const response = await ai.models.generateContent({
             model: aiModel,
             contents: [{ role: "user", parts: [{ text: `Analyze the following user message for hate speech, slurs, harassment: "${text}"` }] }],
             safetySettings: safetySettings,
         });
-
         if (response.candidates && response.candidates.length > 0) {
             const candidate = response.candidates[0];
             if (candidate.finishReason === 'SAFETY') return { isToxic: true, blockCategory: 'Safety Block' };
@@ -226,9 +220,7 @@ async function moderateNickname(member) {
     let displayName = member.displayName.toLowerCase();
     let normalized = displayName.replace(/[^a-z0-9]/g, '');
     let leetNormalized = normalized.split('').map(char => LEET_MAP[char] || char).join('');
-
     const isBad = BAD_WORDS.some(badWord => normalized.includes(badWord) || leetNormalized.includes(badWord));
-
     if (isBad) {
         try {
             if (member.manageable) {
@@ -258,30 +250,24 @@ function startAutomatedNicknameScan(guild) {
         }
     };
     runScan();
-    setInterval(runScan, 5000);
+    setInterval(runScan, NICKNAME_SCAN_INTERVAL);
 }
 
-// ====================== BOT EVENTS ======================
+// ================= BOT EVENTS =================
 
 client.once('ready', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
-
     client.guilds.cache.forEach(async (guild) => {
         if (guild.id !== GUILD_ID) {
             console.log(`❌ Found unauthorized server: ${guild.name}. Leaving...`);
             await guild.leave().catch(e => console.error(e));
         }
     });
-
-    client.user.setPresence({
-        activities: [{ name: 'hopping around Toon Springs', type: 0 }],
-        status: 'online'
-    });
-
+    client.user.setPresence({ activities: [{ name: 'hopping around Toon Springs', type: 0 }], status: 'online' });
     const guild = client.guilds.cache.get(GUILD_ID);
     if (guild) startAutomatedNicknameScan(guild);
 
-    // Define Slash Commands
+    // Commands
     const commands = [
         new SlashCommandBuilder().setName('say').setDescription('Say something anonymously').addStringOption(opt => opt.setName('text').setDescription('Text').setRequired(true)),
         new SlashCommandBuilder().setName('sayrp').setDescription('Speak as a character').addStringOption(opt => opt.setName('character').setDescription('Character (Stormy/Hops)').setRequired(true).addChoices({ name: 'Stormy', value: 'stormy' }, { name: 'Hops', value: 'hops' })).addStringOption(opt => opt.setName('message').setDescription('Message').setRequired(true)),
@@ -316,17 +302,14 @@ client.once('ready', async () => {
     }
 });
 
+// ================= INTERACTION HANDLER =================
 client.on('interactionCreate', async (interaction) => {
-    // ---------------- SLASH COMMANDS ----------------
+    // --- SLASH COMMANDS ---
     if (interaction.isChatInputCommand()) {
         const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ModerateMembers);
         const modCommands = ['kick', 'ban', 'unban', 'timeout', 'setup', 'givexp', 'takeawayxp', 'changelevel', 'clear', 'lock', 'unlock'];
+        if (modCommands.includes(interaction.commandName) && !isMod) return interaction.reply({ content: '❌ Mods only', ephemeral: true });
 
-        if (modCommands.includes(interaction.commandName) && !isMod) {
-            return interaction.reply({ content: '❌ Mods only', ephemeral: true });
-        }
-
-        // --- Say Command ---
         if (interaction.commandName === 'say') {
             const text = interaction.options.getString('text');
             if (AI_ENABLED) {
@@ -337,44 +320,34 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: "✅ Sent", ephemeral: true });
         }
 
-        // --- SayRP Command ---
         if (interaction.commandName === 'sayrp') {
             const char = interaction.options.getString('character');
             const msg = interaction.options.getString('message');
-
             if (AI_ENABLED) {
                 const { isToxic } = await checkMessageToxicity(msg);
                 if (isToxic) return interaction.reply({ content: "❌ Message blocked by filter.", ephemeral: true });
             }
-
             let payload = { content: '', files: [] };
-
             if (char === 'stormy') {
                 payload.content = `**Stormy Bunny:** ${msg}`;
-                // Only attach image if file exists (since canvacord is gone, we rely on basic FS)
                 if (fs.existsSync(STORMY_IMAGE_FILE)) {
-                    const attachment = new AttachmentBuilder(STORMY_IMAGE_FILE, { name: 'stormy.png' });
-                    payload.files = [attachment];
+                    payload.files = [new AttachmentBuilder(STORMY_IMAGE_FILE, { name: 'stormy.png' })];
                 }
             } else {
                 payload.content = `**Hops (Bot):** ${msg}`;
             }
-
             await interaction.channel.send(payload);
             return interaction.reply({ content: `✅ Sent as ${char}`, ephemeral: true });
         }
 
-        // --- Ask Command ---
         if (interaction.commandName === 'ask') {
             await interaction.deferReply();
             if (!AI_ENABLED) return interaction.editReply('❌ AI is disabled (Missing Key).');
-
             const prompt = interaction.options.getString('prompt');
             const manualFilter = filterMessageManually(prompt);
             if (manualFilter.isSevere || manualFilter.isMild) return interaction.editReply('❌ Filtered.');
             const { isToxic } = await checkMessageToxicity(prompt);
             if (isToxic) return interaction.editReply('❌ Filtered by AI.');
-
             try {
                 const systemInstruction = "You are Hops Bunny, an assistant for 'Stormy and Hops'. Use Google Search. Only use sources: stormy-and-hops.fandom.com, stormyandhops.netlify.app, X.com/stormyandhops, YouTube.com/stormyandhops.";
                 const result = await ai.models.generateContent({
@@ -391,7 +364,6 @@ client.on('interactionCreate', async (interaction) => {
             return;
         }
 
-        // --- Info Commands ---
         if (interaction.commandName === 'help') return interaction.reply({ content: HELP_MESSAGE, ephemeral: true });
         if (interaction.commandName === 'serverinfo') return interaction.reply({ content: `**Server:** ${interaction.guild.name}\n**Members:** ${interaction.guild.memberCount}`, ephemeral: true });
         if (interaction.commandName === 'userinfo') {
@@ -400,14 +372,13 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: `User: ${user.tag}\nJoined: ${member ? member.joinedAt.toDateString() : 'Unknown'}`, ephemeral: true });
         }
 
-        // --- Utility Commands ---
         if (interaction.commandName === 'clear') {
             const amount = interaction.options.getInteger('number');
             if (amount < 1 || amount > 100) return interaction.reply({ content: '1-100 only', ephemeral: true });
-            await interaction.channel.bulkDelete(amount, true).catch(() => interaction.reply({ content: "Failed to delete messages (too old?)", ephemeral: true }));
+            await interaction.channel.bulkDelete(amount, true);
             return interaction.reply({ content: '✅ Cleared.', ephemeral: true });
         }
-        
+
         if (interaction.commandName === 'lock' || interaction.commandName === 'unlock') {
             const channel = interaction.options.getChannel('channel') || interaction.channel;
             const lock = interaction.commandName === 'lock';
@@ -415,11 +386,10 @@ client.on('interactionCreate', async (interaction) => {
                 await channel.permissionOverwrites.edit(channel.guild.roles.everyone, { SendMessages: lock ? false : null });
                 return interaction.reply(`✅ Channel ${lock ? 'Locked' : 'Unlocked'}`);
             } catch (e) {
-                return interaction.reply({ content: "Failed to manage channel permissions.", ephemeral: true });
+                return interaction.reply({ content: "Failed to manage channel.", ephemeral: true });
             }
         }
 
-        // --- XP / Leveling ---
         if (interaction.commandName === 'daily') {
             const userId = interaction.user.id;
             const now = Date.now();
@@ -429,30 +399,21 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply("✅ Claimed daily!");
         }
 
-        if (interaction.commandName === 'quest') {
-             return interaction.reply({ content: "📜 The Quest system is currently under construction.", ephemeral: true });
-        }
+        if (interaction.commandName === 'quest') return interaction.reply({ content: "📜 Quest system under construction.", ephemeral: true });
 
-        // --- LEADERBOARD (Converted to Embed, removed Canvacord) ---
         if (interaction.commandName === 'leaderboard') {
             await interaction.deferReply();
             try {
                 const sortedUsers = Object.entries(userLevels).sort(([, a], [, b]) => b.level - a.level || b.xp - a.xp).slice(0, 10);
                 if (sortedUsers.length === 0) return interaction.editReply("No data yet.");
-
-                let lbString = "";
-                sortedUsers.forEach(([userId, data], index) => {
+                const players = sortedUsers.map(([userId, data], index) => {
                     const member = interaction.guild.members.cache.get(userId);
-                    const name = member ? member.displayName : "Unknown User";
-                    lbString += `**${index + 1}.** ${name} - Lvl ${data.level} (${data.xp} XP)\n`;
+                    const user = member ? member.user : { username: 'Unknown', displayAvatarURL: () => 'https://cdn.discordapp.com/embed/avatars/0.png' };
+                    return { avatar: user.displayAvatarURL({ extension: 'png' }), username: user.username, displayName: member ? member.displayName : user.username, level: data.level, xp: data.xp, rank: index + 1 };
                 });
-
-                const embed = new EmbedBuilder()
-                    .setTitle('🏆 Toon Springs Leaderboard')
-                    .setDescription(lbString || "No members found.")
-                    .setColor(0x00FF00); // Green color
-
-                await interaction.editReply({ embeds: [embed] });
+                const lb = new LeaderboardBuilder().setHeader({ title: 'Top 10', image: STORMY_AVATAR_URL }).setPlayers(players).setBackground(RANK_CARD_BACKGROUND_URL);
+                const data = await lb.build({ format: 'png' });
+                await interaction.editReply({ files: [new AttachmentBuilder(data, { name: 'leaderboard.png' })] });
             } catch (e) {
                 console.error(e);
                 await interaction.editReply("Failed to generate leaderboard.");
@@ -460,30 +421,26 @@ client.on('interactionCreate', async (interaction) => {
             return;
         }
 
-        // --- RANK (Converted to Embed, removed Canvacord) ---
         if (interaction.commandName === 'rank') {
             await interaction.deferReply();
             const user = interaction.options.getUser('user') || interaction.user;
+            const member = interaction.guild.members.cache.get(user.id);
+            if (!member) return interaction.editReply("User not found.");
             const userData = userLevels[user.id] || { xp: 0, level: 0 };
             const { level, xpForNext, xpNeeded } = calculateLevel(userData.xp);
             const sorted = Object.entries(userLevels).sort(([, a], [, b]) => b.xp - a.xp);
             const rank = sorted.findIndex(([id]) => id === user.id) + 1;
-
-            const embed = new EmbedBuilder()
-                .setTitle(`🐰 Rank Card: ${user.username}`)
-                .setThumbnail(user.displayAvatarURL())
-                .addFields(
-                    { name: 'Rank', value: `#${rank || 'N/A'}`, inline: true },
-                    { name: 'Level', value: `${level}`, inline: true },
-                    { name: 'XP Progress', value: `${xpNeeded} / ${xpForNext}`, inline: true }
-                )
-                .setColor(0x9B59B6); // Purple color
-
-            await interaction.editReply({ embeds: [embed] });
+            const rankCard = new RankCardBuilder().setAvatar(user.displayAvatarURL({ extension: 'png' })).setRank(rank || 1).setLevel(level).setCurrentXP(xpNeeded).setRequiredXP(xpForNext).setUsername(user.username).setDisplayName(member.displayName).setBackground(RANK_CARD_BACKGROUND_URL);
+            try {
+                const data = await rankCard.build({ format: 'png' });
+                await interaction.editReply({ files: [new AttachmentBuilder(data, { name: 'rank.png' })] });
+            } catch (e) {
+                console.error(e);
+                await interaction.editReply("Failed to generate rank card.");
+            }
             return;
         }
 
-        // --- Mod Actions ---
         if (interaction.commandName === 'givexp') {
             const user = interaction.options.getUser('user');
             const amt = interaction.options.getInteger('xp');
@@ -491,15 +448,15 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply(`✅ Gave ${amt} XP to ${user.tag}`);
         }
         if (interaction.commandName === 'takeawayxp') {
-             const user = interaction.options.getUser('user');
-             const amt = interaction.options.getInteger('xp');
-             const userId = user.id;
-             if (userLevels[userId]) {
+            const user = interaction.options.getUser('user');
+            const amt = interaction.options.getInteger('xp');
+            const userId = user.id;
+            if (userLevels[userId]) {
                 userLevels[userId].xp = Math.max(0, userLevels[userId].xp - amt);
                 const { level } = calculateLevel(userLevels[userId].xp);
                 userLevels[userId].level = level;
-             }
-             return interaction.reply(`✅ Took ${amt} XP from ${user.tag}`);
+            }
+            return interaction.reply(`✅ Took ${amt} XP from ${user.tag}`);
         }
         if (interaction.commandName === 'changelevel') {
             const user = interaction.options.getUser('user');
@@ -537,17 +494,16 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply("❌ Cannot timeout user.");
         }
 
-        // --- Ticket Setup ---
         if (interaction.commandName === 'setup') {
             const ch = client.channels.cache.get(SETUP_POST_CHANNEL);
-            if (!ch) return interaction.reply({ content: "Setup channel not found", ephemeral: true});
+            if (!ch) return interaction.reply({ content: "Setup channel not found", ephemeral: true });
             const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('create_ticket').setLabel('Create Ticket').setStyle(ButtonStyle.Primary));
             await ch.send({ content: 'Create Ticket:', components: [row] });
             return interaction.reply({ content: '✅ Posted', ephemeral: true });
         }
     }
 
-    // ---------------- BUTTONS ----------------
+    // --- BUTTONS ---
     if (interaction.isButton()) {
         if (interaction.customId === 'create_ticket') {
             const channel = await interaction.guild.channels.create({
@@ -561,62 +517,60 @@ client.on('interactionCreate', async (interaction) => {
                 ]
             });
             const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('close_ticket').setLabel('Close').setStyle(ButtonStyle.Danger),
+                new ButtonBuilder().setCustomId('confirm_close_yes').setLabel('Close').setStyle(ButtonStyle.Danger),
                 new ButtonBuilder().setCustomId('claim_ticket').setLabel('Claim').setStyle(ButtonStyle.Success)
             );
             await channel.send({ content: `<@${interaction.user.id}> Welcome!`, components: [row] });
             return interaction.reply({ content: `Ticket created: ${channel}`, ephemeral: true });
         }
-        
+
         if (interaction.customId === 'claim_ticket') {
-             await interaction.channel.setTopic(`Claimed by ${interaction.user.tag}`);
-             return interaction.reply({content: "Ticket claimed!", ephemeral: true});
+            await interaction.channel.setTopic(`Claimed by ${interaction.user.tag}`);
+            return interaction.reply({ content: "Ticket claimed!", ephemeral: true });
         }
 
-        if (interaction.customId === 'close_ticket') {
+        if (interaction.customId === 'confirm_close_yes') {
             const msgs = await interaction.channel.messages.fetch({ limit: 100 });
             const transcript = msgs.reverse().map(m => `${m.author.tag}: ${m.content}`).join('\n');
             const tChannel = client.channels.cache.get(TRANSCRIPT_CHANNEL_ID);
+            
+            // === 1902 LIMIT ===
+            const MAX = 1902;
+            
             if (tChannel) {
-                const attachment = new AttachmentBuilder(Buffer.from(transcript, 'utf-8'), { name: 'transcript.txt' });
-                await tChannel.send({ content: `Ticket closed: ${interaction.channel.name}`, files: [attachment] });
+                if (transcript.length < MAX) {
+                    const attachment = new AttachmentBuilder(Buffer.from(transcript, 'utf-8'), { name: 'transcript.txt' });
+                    await tChannel.send({ content: `Ticket closed: ${interaction.channel.name}`, files: [attachment] });
+                } else {
+                    await tChannel.send(`Transcript too long (> ${MAX} chars). Sending split messages.`);
+                    const chunks = transcript.match(new RegExp(`.{1,${MAX}}`, 'g'));
+                    for (const chunk of chunks) await tChannel.send(`\`\`\`${chunk}\`\`\``);
+                }
             }
             await interaction.channel.delete();
-        }
-        
-        // --- Thread Buttons (Archive/Edit) ---
-        if (interaction.customId === 'archive_thread') {
-             if (interaction.channel.isThread()) {
-                 await interaction.channel.setArchived(true);
-                 return interaction.reply({content: "Archived.", ephemeral: true});
-             }
         }
     }
 });
 
+// ================= MESSAGE CREATE =================
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
-    // --- Filters ---
+    // Filters
     const manualFilter = filterMessageManually(message.content);
-    
     if (manualFilter.isSevere) {
         await message.delete().catch(() => {});
-        if (message.member.manageable) {
-            message.member.timeout(60 * 60 * 1000, "Severe Filter").catch(() => {});
-        }
+        if (message.member.manageable) message.member.timeout(60 * 60 * 1000, "Severe Filter").catch(() => {});
         const log = client.channels.cache.get(LOG_CHANNEL_ID);
         if (log) log.send(`🚨 Severe Violation: ${message.author.tag}`);
         return;
     }
-
     if (manualFilter.isMild) {
         await message.delete().catch(() => {});
         return;
     }
-
     if (AI_ENABLED) {
-        const { isToxic, blockCategory } = await checkMessageToxicity(message.content);
+        const { isToxic } = await checkMessageToxicity(message.content);
         if (isToxic) {
             await message.delete().catch(() => {});
             if (message.member.manageable) message.member.timeout(10 * 60 * 1000, "AI Filter").catch(() => {});
@@ -624,28 +578,23 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // --- AFK Logic ---
-    // If author is AFK, remove status
+    // AFK
     if (afkStatus.has(message.author.id)) {
         afkStatus.delete(message.author.id);
         message.reply("Welcome back! AFK removed.").then(m => setTimeout(() => m.delete(), 5000));
     }
-    // If mentioned user is AFK
     if (message.mentions.users.size > 0) {
         message.mentions.users.forEach(u => {
-            if (afkStatus.has(u.id)) {
-                message.reply(`${u.username} is AFK: ${afkStatus.get(u.id).reason}`);
-            }
+            if (afkStatus.has(u.id)) message.reply(`${u.username} is AFK: ${afkStatus.get(u.id).reason}`);
         });
     }
-    // Set AFK command
     if (message.content.toLowerCase().startsWith('?afk')) {
         const reason = message.content.slice(4).trim() || 'AFK';
         afkStatus.set(message.author.id, { reason, timestamp: Date.now() });
         return message.reply(`Set AFK: ${reason}`);
     }
 
-    // --- XP ---
+    // XP
     if (message.channel.id !== AFK_XP_EXCLUSION_CHANNEL_ID) {
         const userId = message.author.id;
         const now = Date.now();
@@ -660,31 +609,21 @@ client.on('messageCreate', async (message) => {
 
 client.on('guildMemberAdd', async (member) => {
     moderateNickname(member);
-    // Anti-troll
     const now = Date.now();
     const data = joinTracker.get(member.id) || { count: 0, lastJoin: 0 };
     if (now - data.lastJoin > 15 * 60 * 1000) data.count = 0;
     data.count++;
     data.lastJoin = now;
     joinTracker.set(member.id, data);
-
     if (data.count >= 10 && member.bannable) {
         await member.ban({ reason: 'Rapid Join' });
     }
 });
 
-client.on('guildCreate', async (guild) => {
-    if (guild.id !== GUILD_ID) {
-        console.log("Leaving unauthorized guild:", guild.name);
-        await guild.leave();
-    }
-});
-
-// ====================== STARTUP ======================
-
 client.login(process.env.TOKEN);
 
-const PORT = process.env.PORT || 3000;
+// === 1902 PORT ===
+const PORT = process.env.PORT || 1902;
 http.createServer((req, res) => {
     res.writeHead(200);
     res.end('Bot Running');
