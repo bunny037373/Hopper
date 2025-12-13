@@ -182,9 +182,10 @@ function filterMessageManually(text) {
 }
 
 // ================= AI CONFIG =================
+// UPDATED: Changed to BLOCK_MEDIUM_AND_ABOVE to fix the "There's a lot of things we can talk about" error
 const safetySettings = [
-    { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_LOW_AND_ABOVE },
-    { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_LOW_AND_ABOVE },
+    { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+    { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
 ];
 const aiModel = 'gemini-2.5-flash';
 
@@ -660,6 +661,8 @@ client.on('messageCreate', async (message) => {
     }
     if (manualFilter.isMild) {
         await message.delete().catch(() => {});
+        const log = client.channels.cache.get(LOG_CHANNEL_ID);
+        if (log) log.send(`<:madscarlet:1448751667863355482> Mild Violation (Deleted): ${message.author.tag}`);
         return;
     }
     
