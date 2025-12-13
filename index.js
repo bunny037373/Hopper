@@ -557,6 +557,34 @@ client.on('interactionCreate', async (interaction) => {
             }
             await interaction.channel.delete();
         }
+
+        // --- NEW THREAD BUTTON LOGIC ---
+        if (interaction.customId === 'archive_thread') {
+             // Basic permission check (thread owner or mod)
+             const thread = interaction.channel;
+             if (thread.isThread()) {
+                 await thread.setArchived(true);
+                 return interaction.reply({content: "Archived.", ephemeral: true});
+             }
+        }
+        if (interaction.customId === 'edit_title') {
+            const thread = interaction.channel;
+            if (thread.isThread()) {
+                await interaction.reply({ content: "Send the new title in this thread. You have 30 seconds.", ephemeral: true });
+                const filter = m => m.author.id === interaction.user.id && m.channelId === thread.id;
+                const collector = thread.createMessageCollector({ filter, time: 30000, max: 1 });
+                
+                collector.on('collect', async (msg) => {
+                    try {
+                        await thread.setName(msg.content.slice(0, 100)); 
+                        await msg.delete();
+                        await interaction.followUp({ content: "✅ Title updated", ephemeral: true });
+                    } catch (e) {
+                        await interaction.followUp({ content: "❌ Failed to update title.", ephemeral: true });
+                    }
+                });
+            }
+        }
     }
 });
 
@@ -569,8 +597,25 @@ client.on('messageCreate', async (message) => {
         if (message.attachments.size === 0 && message.stickers.size === 0) {
             await message.delete().catch(() => {});
             return; // Deleted because text-only.
+        } else {
+            // Valid Image - CREATE THREAD
+            try {
+                await message.react('✨');
+                const thread = await message.startThread({
+                    name: `${message.author.username}'s Post`,
+                    autoArchiveDuration: 60, // 1 hour
+                });
+                
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('archive_thread').setLabel('Archive Thread').setStyle(ButtonStyle.Danger),
+                    new ButtonBuilder().setCustomId('edit_title').setLabel('Edit Title').setStyle(ButtonStyle.Secondary)
+                );
+                
+                await thread.send({ content: `Hey ${message.author}! Manage your thread here:`, components: [row] });
+            } catch (e) {
+                console.error("Failed to create thread:", e);
+            }
         }
-        // If image exists, proceed to filters (allow text with image, but check for toxicity).
     }
 
     // --- 2. FILTERS (SECOND LAYER) ---
