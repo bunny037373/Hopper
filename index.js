@@ -6,7 +6,594 @@ const {
   ButtonBuilder,
   ButtonStyle,
   REST,
+  Routes,// Import necessary modules
+const {
+  Client,
+  GatewayIntentBits,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  REST,
   Routes,
+  SlashCommandBuilder,
+  PermissionsBitField,
+  ThreadChannel,
+  AttachmentBuilder // Needed for sending images
+} = require('discord.js');
+const http = require('http');
+const fs = require('fs'); // Needed to check if image file exists
+
+// --- AI Import ---
+const { GoogleGenAI, HarmCategory, HarmBlockThreshold } = require('@google/genai');
+
+// --- Image Generation Import ---
+const { RankCardBuilder, LeaderboardBuilder, Font } = require('canvacord');
+Font.loadDefault(); 
+
+// Check for the mandatory token environment variable
+if (!process.env.TOKEN) {
+  console.error("❌ TOKEN not found. Add TOKEN in Render Environment Variables.");
+  process.exit(1);
+}
+
+// --- AI Key Check & Conditional Initialization ---
+let ai;
+let AI_ENABLED = !!process.env.GEMINI_API_KEY; 
+
+if (!AI_ENABLED) {
+  console.error("❌ GEMINI_API_KEY not found. AI commands (/ask) and AI moderation are DISABLED.");
+}
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent, 
+    GatewayIntentBits.GuildMembers,   
+    GatewayIntentBits.GuildMessageReactions 
+  ]
+});
+
+// ====================== CONFIGURATION ======================
+
+// ** LOCAL IMAGE CONFIG **
+// Ensure you renamed IMG_9089.png to stormy.png and it is in the same folder
+const STORMY_IMAGE_FILE = './stormy.png'; 
+
+// ** RANK CARD BACKGROUND **
+const RANK_CARD_BACKGROUND_URL = 'https://i.imgur.com/r62Y0c7.png'; 
+
+// --- DISCORD IDs ---
+const GUILD_ID = '1369477266958192720';           
+const TARGET_CHANNEL_ID = '1415134887232540764'; 
+const LOG_CHANNEL_ID = '1414286807360602112';    
+const TRANSCRIPT_CHANNEL_ID = '1414354204079689849';
+const SETUP_POST_CHANNEL = '1445628128423579660';   
+const MUTE_ROLE_ID = '1446530920650899536';        
+const RP_CHANNEL_ID = '1421219064985948346';      
+const RP_CATEGORY_ID = '1446530920650899536';      
+
+// --- LEVELING/XP CONFIGURATION ---
+const XP_COOLDOWN_MS = 60 * 1000; 
+const DAILY_COOLDOWN_MS = 24 * 60 * 60 * 1000; 
+const XP_GAIN = 15;
+
+const AFK_XP_EXCLUSION_CHANNEL_ID = '1414352027034583080';
+const BOOSTER_ROLE_ID = '1400596498969923685'; 
+
+const LEVEL_ROLES = {
+    5: '1418567907662630964',
+    10: '1418568030132244611',
+    15: '1418568206662238269',
+    20: '1418568333229559978', 
+    30: '1418568692819824741',
+    50: '1418568903411372063', 
+    100: '1441563487565250692',
+};
+
+const STORMY_AVATAR_URL = 'https://i.imgur.com/r62Y0c7.png'; 
+const NICKNAME_SCAN_INTERVAL = 5 * 1000;
+
+const HELP_MESSAGE = `hello! Do you need help?
+Please go to https://discord.com/channels/${GUILD_ID}/1414304297122009099
+and for more assistance please use
+https://discord.com/channels/${GUILD_ID}/1414352972304879626
+channel to create a more helpful environment to tell a mod`;
+
+// ====================== DATA STORAGE ======================
+const userLevels = {}; 
+const xpCooldown = new Map(); 
+const dailyCooldown = new Map(); 
+const joinTracker = new Map(); 
+const afkStatus = new Map(); 
+// ==========================================================
+
+// ====================== LEVELING FUNCTIONS ======================
+
+function calculateLevel(totalXp) {
+    let level = 0;
+    let xpRemaining = totalXp;
+    let xpNeeded = 100;
+
+    while (xpRemaining >= xpNeeded) {
+        xpRemaining -= xpNeeded;
+        level++;
+        xpNeeded = 5 * level * level + 50 * level + 100;
+    }
+
+    return { level, xpForNext: xpNeeded, xpNeeded: xpRemaining };
+}
+
+async function handleLevelRoles(member, newLevel) {
+    const guild = member.guild;
+    const levelKeys = Object.keys(LEVEL_ROLES).map(Number).sort((a, b) => b - a);
+
+    try {
+        let roleToAddId = null;
+        for (const levelThreshold of levelKeys) {
+            if (newLevel >= levelThreshold) {
+                roleToAddId = LEVEL_ROLES[levelThreshold];
+                break;
+            }
+        }
+
+        for (const levelThreshold of levelKeys) {
+            const roleId = LEVEL_ROLES[levelThreshold];
+            const role = guild.roles.cache.get(roleId);
+            if (!role) continue;
+
+            if (roleId === roleToAddId) {
+                if (!member.roles.cache.has(roleId)) {
+                    await member.roles.add(role, `Level up to ${newLevel}`);
+                }
+            } else {
+                if (member.roles.cache.has(roleId)) {
+                    if (newLevel > levelThreshold) {
+                         await member.roles.remove(role, 'Removing outdated level role.');
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Failed to handle level up roles:', e);
+    }
+}
+
+async function addXP(member, xpAmount, message = null) {
+    const userId = member.id;
+    if (!userLevels[userId]) userLevels[userId] = { xp: 0, level: 0 };
+    
+    const oldLevel = userLevels[userId].level;
+    userLevels[userId].xp += xpAmount;
+    
+    const { level } = calculateLevel(userLevels[userId].xp);
+    userLevels[userId].level = level;
+    
+    if (level > oldLevel) {
+        if (message && message.channel) {
+            message.channel.send(`${member.toString()} wow toon! You are now level **${level}**!`);
+        }
+        await handleLevelRoles(member, level);
+    }
+}
+
+// ====================== FILTER CONFIG ======================
+
+const ALLOWED_WORDS = ["assist", "assistance", "assistant", "associat", "class", "classic", "glass", "grass", "pass", "bass", "compass", "hello", "shell", "peacock", "cocktail", "babcock"];
+
+const MILD_BAD_WORDS = ["fuck", "f*ck", "f**k", "f-ck", "fck", "fu-", "f-", "f*cking", "fucking", "shit", "s*it", "s**t", "sh!t", "ass", "bitch", "hoe", "whore", "slut", "cunt", "dick", "pussy", "cock", "bastard", "sexy"];
+
+const SEVERE_WORDS = ["nigger", "nigga", "niga", "faggot", "fag", "dyke", "tranny", "chink", "kike", "paki", "gook", "spic", "beaner", "coon", "retard", "spastic", "mong", "autist", "kys", "kill yourself", "suicide", "rape", "molest", "hitler", "nazi", "kkk"];
+
+const BAD_WORDS = [...MILD_BAD_WORDS, ...SEVERE_WORDS];
+
+const LEET_MAP = {'0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '@': 'a', '$': 's', '!': 'i', '(': 'c', '+': 't', '8': 'b', '*': 'o', '9': 'g'};
+
+function filterMessageManually(text) {
+    let normalized = text.toLowerCase().replace(/[^a-z0-9]/g, '');
+    let leetNormalized = normalized.split('').map(char => LEET_MAP[char] || char).join('');
+    
+    const checkNormalizedText = (list, normText) => {
+        for (const badWord of list) {
+            if (normText.includes(badWord)) {
+                if (ALLOWED_WORDS.some(allowed => allowed.includes(badWord))) continue; 
+                return badWord;
+            }
+        }
+        return null;
+    };
+    
+    let severeMatch = checkNormalizedText(SEVERE_WORDS, normalized) || checkNormalizedText(SEVERE_WORDS, leetNormalized);
+    if (severeMatch) return { isSevere: true, isMild: false, matchedWord: severeMatch };
+
+    let mildMatch = checkNormalizedText(MILD_BAD_WORDS, normalized) || checkNormalizedText(MILD_BAD_WORDS, leetNormalized);
+    if (mildMatch) return { isSevere: false, isMild: true, matchedWord: mildMatch };
+    
+    return { isSevere: false, isMild: false, matchedWord: null };
+}
+
+// ================= AI CONFIG =================
+const safetySettings = [
+  { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_LOW_AND_ABOVE },
+  { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_LOW_AND_ABOVE },
+];
+
+if (AI_ENABLED) {
+    try {
+        ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    } catch (e) {
+        console.error("❌ Failed to initialize GoogleGenAI.", e);
+        AI_ENABLED = false; 
+    }
+}
+const aiModel = 'gemini-2.5-flash';
+
+async function checkMessageToxicity(text) {
+  if (!AI_ENABLED) return { isToxic: false, blockCategory: 'AI_DISABLED' }; 
+  if (text.length === 0) return { isToxic: false, blockCategory: 'None' };
+  
+  try {
+    const response = await ai.models.generateContent({
+      model: aiModel,
+      contents: [{ role: "user", parts: [{ text: `Analyze the following user message for hate speech, slurs, harassment: "${text}"` }] }],
+      safetySettings: safetySettings,
+    });
+
+    if (response.candidates && response.candidates.length > 0) {
+        const candidate = response.candidates[0];
+        if (candidate.finishReason === 'SAFETY') return { isToxic: true, blockCategory: 'Safety Block' };
+    }
+    return { isToxic: false, blockCategory: 'None' };
+  } catch (error) {
+    console.error('Gemini Moderation API Error:', error);
+    return { isToxic: false, blockCategory: 'API_Error' }; 
+  }
+}
+
+async function moderateNickname(member) {
+  let displayName = member.displayName.toLowerCase();
+  let normalized = displayName.replace(/[^a-z0-9]/g, '');
+  let leetNormalized = normalized.split('').map(char => LEET_MAP[char] || char).join('');
+
+  const isBad = BAD_WORDS.some(badWord => normalized.includes(badWord) || leetNormalized.includes(badWord));
+
+  if (isBad) {
+    try {
+      if (member.manageable) {
+        await member.setNickname("[moderated nickname]");
+        const log = member.guild.channels.cache.get(LOG_CHANNEL_ID);
+        if (log) log.send(`🛡️ **Nickname Moderated**\nUser: <@${member.id}>\nOld Name: ||${member.user.username}||`);
+        return true; 
+      }
+    } catch (err) {
+      console.error(`Failed to moderate nickname for ${member.user.tag}:`, err);
+    }
+  }
+  return false; 
+}
+
+async function runAutomatedNicknameScan(guild) {
+    if (!guild) return; 
+    let moderatedCount = 0;
+    try {
+        const members = await guild.members.fetch(); 
+        for (const [id, member] of members) {
+            if (member.user.bot) continue;
+            if (await moderateNickname(member)) moderatedCount++;
+        }
+    } catch (error) {
+        console.error('Automated Nickname Scan failed:', error);
+    }
+}
+
+function startAutomatedNicknameScan(guild) {
+    runAutomatedNicknameScan(guild); 
+    setInterval(() => runAutomatedNicknameScan(guild), NICKNAME_SCAN_INTERVAL);
+}
+
+// ================= READY =================
+client.once('ready', async () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
+
+  client.guilds.cache.forEach(async (guild) => {
+    if (guild.id !== GUILD_ID) {
+        console.log(`❌ Found unauthorized server: ${guild.name}. Leaving...`);
+        await guild.leave().catch(e => console.error(e));
+    }
+  });
+
+  client.user.setPresence({
+    activities: [{ name: 'hopping around Toon Springs', type: 0 }],
+    status: 'online'
+  });
+
+  const guild = client.guilds.cache.get(GUILD_ID);
+  if (guild) startAutomatedNicknameScan(guild); 
+
+  // Define Slash Commands
+  const commands = [
+    new SlashCommandBuilder().setName('say').setDescription('Say something anonymously').addStringOption(opt => opt.setName('text').setDescription('Text').setRequired(true)),
+    new SlashCommandBuilder().setName('sayrp').setDescription('Speak as a character').addStringOption(opt => opt.setName('character').setDescription('Character (Stormy/Hops)').setRequired(true).addChoices({ name: 'Stormy', value: 'stormy' }, { name: 'Hops', value: 'hops' })).addStringOption(opt => opt.setName('message').setDescription('Message').setRequired(true)),
+    new SlashCommandBuilder().setName('ask').setDescription('Search about stormy and hops').addStringOption(opt => opt.setName('prompt').setDescription('Question').setRequired(true)), 
+    new SlashCommandBuilder().setName('help').setDescription('Get help'),
+    new SlashCommandBuilder().setName('serverinfo').setDescription('Server info'),
+    new SlashCommandBuilder().setName('clear').setDescription('Clear messages').addIntegerOption(opt => opt.setName('number').setDescription('Number').setRequired(true)),
+    new SlashCommandBuilder().setName('lock').setDescription('Lock channel').addChannelOption(opt => opt.setName('channel').setDescription('Channel').setRequired(false)),
+    new SlashCommandBuilder().setName('unlock').setDescription('Unlock channel').addChannelOption(opt => opt.setName('channel').setDescription('Channel').setRequired(false)),
+    new SlashCommandBuilder().setName('userinfo').setDescription('User info').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(false)),
+    new SlashCommandBuilder().setName('daily').setDescription('Claim daily XP'),
+    new SlashCommandBuilder().setName('leaderboard').setDescription('Show top members'),
+    new SlashCommandBuilder().setName('quest').setDescription('Get a quest'),
+    new SlashCommandBuilder().setName('rank').setDescription('Show rank card').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(false)),
+    new SlashCommandBuilder().setName('givexp').setDescription('Give XP').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true)).addIntegerOption(opt => opt.setName('xp').setDescription('XP').setRequired(true)),
+    new SlashCommandBuilder().setName('takeawayxp').setDescription('Take XP').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true)).addIntegerOption(opt => opt.setName('xp').setDescription('XP').setRequired(true)),
+    new SlashCommandBuilder().setName('changelevel').setDescription('Set level').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true)).addIntegerOption(opt => opt.setName('level').setDescription('Level').setRequired(true)),
+    new SlashCommandBuilder().setName('kick').setDescription('Kick member').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true)),
+    new SlashCommandBuilder().setName('ban').setDescription('Ban member').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true)),
+    new SlashCommandBuilder().setName('unban').setDescription('Unban member').addStringOption(opt => opt.setName('userid').setDescription('User ID').setRequired(true)),
+    new SlashCommandBuilder().setName('timeout').setDescription('Timeout member').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true)).addIntegerOption(opt => opt.setName('minutes').setDescription('Minutes').setRequired(true)),
+    new SlashCommandBuilder().setName('setup').setDescription('Post ticket panel'),
+  ].map(c => c.toJSON());
+
+  const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
+  try {
+    console.log('⚡ Registering commands...');
+    await rest.put(Routes.applicationGuildCommands(client.user.id, GUILD_ID), { body: commands });
+    console.log('✅ Slash commands registered.');
+  } catch (err) {
+    console.error('Failed to register commands:', err);
+  }
+});
+
+client.on('guildCreate', async (guild) => {
+    if (guild.id !== GUILD_ID) await guild.leave();
+});
+
+// ================= SLASH COMMANDS =================
+client.on('interactionCreate', async (interaction) => {
+  if (interaction.isChatInputCommand()) {
+    const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ModerateMembers);
+    const modCommands = ['kick','ban','unban','timeout','setup', 'givexp', 'takeawayxp', 'changelevel', 'clear', 'lock', 'unlock'];
+
+    if (modCommands.includes(interaction.commandName) && !isMod) {
+        return interaction.reply({ content: '❌ Mods only', ephemeral: true });
+    }
+    
+    // --- Say Command ---
+    if (interaction.commandName === 'say') {
+      const text = interaction.options.getString('text');
+      if (AI_ENABLED) {
+        const { isToxic } = await checkMessageToxicity(text);
+        if (isToxic) return interaction.reply({ content: "❌ Blocked by filter.", ephemeral: true });
+      }
+      await interaction.channel.send(text);
+      return interaction.reply({ content: "✅ Sent", ephemeral: true });
+    }
+
+    // --- SayRP Command (FIXED) ---
+    if (interaction.commandName === 'sayrp') {
+        const char = interaction.options.getString('character');
+        const msg = interaction.options.getString('message');
+
+        // Check toxicity first
+        if (AI_ENABLED) {
+            const { isToxic } = await checkMessageToxicity(msg);
+            if (isToxic) return interaction.reply({ content: "❌ Message blocked by filter.", ephemeral: true });
+        }
+
+        let payload = { content: '', files: [] };
+
+        if (char === 'stormy') {
+            payload.content = `**Stormy Bunny:** ${msg}`;
+            // Load LOCAL file
+            if (fs.existsSync(STORMY_IMAGE_FILE)) {
+                const attachment = new AttachmentBuilder(STORMY_IMAGE_FILE, { name: 'stormy.png' });
+                payload.files = [attachment];
+            }
+        } else {
+            payload.content = `**Hops (Bot):** ${msg}`;
+        }
+
+        await interaction.channel.send(payload);
+        return interaction.reply({ content: `✅ Sent as ${char}`, ephemeral: true });
+    }
+    
+    // --- Ask AI ---
+    if (interaction.commandName === 'ask') { 
+        await interaction.deferReply(); 
+        if (!AI_ENABLED) return interaction.editReply('❌ AI is disabled.');
+
+        const prompt = interaction.options.getString('prompt');
+        const manualFilter = filterMessageManually(prompt);
+        if (manualFilter.isSevere || manualFilter.isMild) return interaction.editReply('❌ Filtered.');
+        const { isToxic } = await checkMessageToxicity(prompt);
+        if (isToxic) return interaction.editReply('❌ Filtered by AI.');
+
+        try {
+            const systemInstruction = "You are Hops Bunny, an assistant for 'Stormy and Hops'. Use Google Search. Only use sources: stormy-and-hops.fandom.com, stormyandhops.netlify.app, X.com/stormyandhops, YouTube.com/stormyandhops.";
+            const result = await ai.models.generateContent({
+                model: aiModel,
+                contents: [{ role: "user", parts: [{ text: prompt }] }],
+                safetySettings: safetySettings,
+                config: { systemInstruction, tools: [{ googleSearch: {} }] }
+            });
+            await interaction.editReply(`🐰 **Hopper response:**\n\n${result.text.slice(0, 1900)}`);
+        } catch (error) {
+            console.error(error);
+            await interaction.editReply('❌ AI Error.');
+        }
+        return;
+    }
+
+    if (interaction.commandName === 'help') return interaction.reply({ content: HELP_MESSAGE, ephemeral: true });
+    if (interaction.commandName === 'serverinfo') return interaction.reply({ content: `**Server:** ${interaction.guild.name}\n**Members:** ${interaction.guild.memberCount}`, ephemeral: true });
+
+    if (interaction.commandName === 'clear') {
+        const amount = interaction.options.getInteger('number');
+        if (amount < 1 || amount > 100) return interaction.reply({ content: '1-100 only', ephemeral: true });
+        await interaction.channel.bulkDelete(amount, true);
+        return interaction.reply({ content: '✅ Cleared.', ephemeral: true });
+    }
+
+    if (interaction.commandName === 'userinfo') {
+        const user = interaction.options.getUser('user') || interaction.user;
+        const member = interaction.guild.members.cache.get(user.id);
+        return interaction.reply({ content: `User: ${user.tag}\nJoined: ${member ? member.joinedAt.toDateString() : 'Unknown'}`, ephemeral: true });
+    }
+
+    // --- XP Commands ---
+    if (interaction.commandName === 'daily') {
+        const userId = interaction.user.id;
+        const now = Date.now();
+        if (dailyCooldown.has(userId) && now < dailyCooldown.get(userId)) return interaction.reply({ content: "❌ Cooldown.", ephemeral: true });
+        await addXP(interaction.member, 500);
+        dailyCooldown.set(userId, now + DAILY_COOLDOWN_MS);
+        return interaction.reply("✅ Claimed daily!");
+    }
+
+    if (interaction.commandName === 'rank') {
+        await interaction.deferReply();
+        const user = interaction.options.getUser('user') || interaction.user;
+        const member = interaction.guild.members.cache.get(user.id);
+        if (!member) return interaction.editReply("User not found.");
+
+        const userData = userLevels[user.id] || { xp: 0, level: 0 };
+        const { level, xpForNext, xpNeeded } = calculateLevel(userData.xp);
+        
+        // Rank Calculation
+        const sorted = Object.entries(userLevels).sort(([, a], [, b]) => b.xp - a.xp);
+        const rank = sorted.findIndex(([id]) => id === user.id) + 1;
+
+        const rankCard = new RankCardBuilder()
+            .setAvatar(user.displayAvatarURL({ extension: 'png' }))
+            .setRank(rank || 1)
+            .setLevel(level)
+            .setCurrentXP(xpNeeded)
+            .setRequiredXP(xpForNext)
+            .setUsername(user.username)
+            .setDisplayName(member.displayName)
+            .setBackground(RANK_CARD_BACKGROUND_URL); 
+
+        try {
+            const data = await rankCard.build({ format: 'png' });
+            await interaction.editReply({ files: [new AttachmentBuilder(data, { name: 'rank.png' })] });
+        } catch (e) {
+            console.error(e);
+            await interaction.editReply("Failed to generate rank card.");
+        }
+        return;
+    }
+    
+    // --- Mod XP ---
+    if (interaction.commandName === 'givexp') {
+        const user = interaction.options.getUser('user');
+        const amt = interaction.options.getInteger('xp');
+        await addXP(interaction.guild.members.cache.get(user.id), amt);
+        return interaction.reply(`✅ Gave ${amt} XP to ${user.tag}`);
+    }
+    
+    // --- Mod Actions ---
+    if (interaction.commandName === 'kick') {
+        const user = interaction.options.getUser('user');
+        await interaction.guild.members.kick(user.id);
+        return interaction.reply(`✅ Kicked ${user.tag}`);
+    }
+    if (interaction.commandName === 'ban') {
+        const user = interaction.options.getUser('user');
+        await interaction.guild.members.ban(user.id);
+        return interaction.reply(`✅ Banned ${user.tag}`);
+    }
+    if (interaction.commandName === 'timeout') {
+        const user = interaction.options.getUser('user');
+        const mins = interaction.options.getInteger('minutes');
+        await interaction.guild.members.cache.get(user.id).timeout(mins * 60 * 1000);
+        return interaction.reply(`✅ Timed out ${user.tag}`);
+    }
+    
+    // --- Tickets ---
+    if (interaction.commandName === 'setup') {
+        const ch = client.channels.cache.get(SETUP_POST_CHANNEL);
+        const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('create_ticket').setLabel('Create Ticket').setStyle(ButtonStyle.Primary));
+        await ch.send({ content: 'Create Ticket:', components: [row] });
+        return interaction.reply({ content: '✅ Posted', ephemeral: true });
+    }
+  }
+
+  // --- Buttons (Tickets) ---
+  if (interaction.isButton()) {
+      if (interaction.customId === 'create_ticket') {
+          const channel = await interaction.guild.channels.create({
+              name: `ticket-${interaction.user.username}`,
+              type: 0,
+              parent: RP_CATEGORY_ID,
+              permissionOverwrites: [
+                  { id: interaction.guild.roles.everyone, deny: [PermissionsBitField.Flags.ViewChannel] },
+                  { id: interaction.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] },
+                  { id: client.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] }
+              ]
+          });
+          const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('close_ticket').setLabel('Close').setStyle(ButtonStyle.Danger));
+          await channel.send({ content: `<@${interaction.user.id}> Welcome!`, components: [row] });
+          return interaction.reply({ content: `Ticket created: ${channel}`, ephemeral: true });
+      }
+
+      if (interaction.customId === 'close_ticket') {
+          const msgs = await interaction.channel.messages.fetch({ limit: 100 });
+          const transcript = msgs.reverse().map(m => `${m.author.tag}: ${m.content}`).join('\n');
+          const tChannel = client.channels.cache.get(TRANSCRIPT_CHANNEL_ID);
+          if (tChannel) {
+              const attachment = new AttachmentBuilder(Buffer.from(transcript, 'utf-8'), { name: 'transcript.txt' });
+              await tChannel.send({ content: `Ticket closed: ${interaction.channel.name}`, files: [attachment] });
+          }
+          await interaction.channel.delete();
+      }
+  }
+});
+
+client.on('messageCreate', async (message) => {
+    if (message.author.bot || !message.guild) return;
+    
+    // Filters
+    const manualFilter = filterMessageManually(message.content);
+    if (manualFilter.isSevere) {
+        await message.delete().catch(()=>{});
+        if (message.member.manageable) message.member.timeout(60*60*1000, "Filter");
+        return;
+    }
+    
+    // XP
+    if (message.channel.id !== AFK_XP_EXCLUSION_CHANNEL_ID) {
+        const userId = message.author.id;
+        const now = Date.now();
+        if (!xpCooldown.has(userId) || now > xpCooldown.get(userId)) {
+            await addXP(message.member, XP_GAIN, message);
+            xpCooldown.set(userId, now + XP_COOLDOWN_MS);
+        }
+    }
+});
+
+client.on('guildMemberAdd', async (member) => {
+    moderateNickname(member);
+    // Anti-troll
+    const now = Date.now();
+    const data = joinTracker.get(member.id) || { count: 0, lastJoin: 0 };
+    if (now - data.lastJoin > 15*60*1000) data.count = 0;
+    data.count++;
+    data.lastJoin = now;
+    joinTracker.set(member.id, data);
+    
+    if (data.count >= 10 && member.bannable) {
+        await member.ban({ reason: 'Rapid Join' });
+    }
+});
+
+client.login(process.env.TOKEN);
+
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+    res.writeHead(200);
+    res.end('Bot Running');
+}).listen(PORT, () => console.log(`Web server listening on port ${PORT}`));
   SlashCommandBuilder,
   PermissionsBitField,
   ThreadChannel,
@@ -1311,3 +1898,4 @@ http.createServer((req, res) => {
 }).listen(PORT, () => {
     console.log(`Web server listening on port ${PORT}`);
 });
+
