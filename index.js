@@ -10,22 +10,14 @@ const {
     SlashCommandBuilder,
     PermissionsBitField,
     ThreadChannel,
-    AttachmentBuilder
+    AttachmentBuilder,
+    EmbedBuilder // Added for text-based ranks
 } = require('discord.js');
 const http = require('http');
 const fs = require('fs');
 
 // --- AI Import ---
 const { GoogleGenAI, HarmCategory, HarmBlockThreshold } = require('@google/genai');
-
-// --- Image Generation Import ---
-const { RankCardBuilder, LeaderboardBuilder, Font } = require('canvacord');
-// Load default font
-try {
-    Font.loadDefault();
-} catch (e) {
-    console.log("Font load handled.");
-}
 
 // Check for the mandatory token environment variable
 if (!process.env.TOKEN) {
@@ -63,6 +55,7 @@ const client = new Client({
 
 // ** LOCAL IMAGE CONFIG **
 const STORMY_IMAGE_FILE = './stormy.png';
+// These URLs are used for Embed thumbnails now
 const RANK_CARD_BACKGROUND_URL = 'https://i.imgur.com/r62Y0c7.png';
 const STORMY_AVATAR_URL = 'https://i.imgur.com/r62Y0c7.png';
 
@@ -401,19 +394,26 @@ client.on('interactionCreate', async (interaction) => {
 
         if (interaction.commandName === 'quest') return interaction.reply({ content: "📜 Quest system under construction.", ephemeral: true });
 
+        // --- LEADERBOARD (Embed Only - No Canvacord) ---
         if (interaction.commandName === 'leaderboard') {
             await interaction.deferReply();
             try {
                 const sortedUsers = Object.entries(userLevels).sort(([, a], [, b]) => b.level - a.level || b.xp - a.xp).slice(0, 10);
                 if (sortedUsers.length === 0) return interaction.editReply("No data yet.");
-                const players = sortedUsers.map(([userId, data], index) => {
+
+                let lbString = "";
+                sortedUsers.forEach(([userId, data], index) => {
                     const member = interaction.guild.members.cache.get(userId);
-                    const user = member ? member.user : { username: 'Unknown', displayAvatarURL: () => 'https://cdn.discordapp.com/embed/avatars/0.png' };
-                    return { avatar: user.displayAvatarURL({ extension: 'png' }), username: user.username, displayName: member ? member.displayName : user.username, level: data.level, xp: data.xp, rank: index + 1 };
+                    const name = member ? member.displayName : "Unknown User";
+                    lbString += `**${index + 1}.** ${name} - Lvl ${data.level} (${data.xp} XP)\n`;
                 });
-                const lb = new LeaderboardBuilder().setHeader({ title: 'Top 10', image: STORMY_AVATAR_URL }).setPlayers(players).setBackground(RANK_CARD_BACKGROUND_URL);
-                const data = await lb.build({ format: 'png' });
-                await interaction.editReply({ files: [new AttachmentBuilder(data, { name: 'leaderboard.png' })] });
+
+                const embed = new EmbedBuilder()
+                    .setTitle('🏆 Toon Springs Leaderboard')
+                    .setDescription(lbString || "No members found.")
+                    .setColor(0x00FF00); // Green
+
+                await interaction.editReply({ embeds: [embed] });
             } catch (e) {
                 console.error(e);
                 await interaction.editReply("Failed to generate leaderboard.");
@@ -421,23 +421,29 @@ client.on('interactionCreate', async (interaction) => {
             return;
         }
 
+        // --- RANK (Embed Only - No Canvacord) ---
         if (interaction.commandName === 'rank') {
             await interaction.deferReply();
             const user = interaction.options.getUser('user') || interaction.user;
             const member = interaction.guild.members.cache.get(user.id);
             if (!member) return interaction.editReply("User not found.");
+
             const userData = userLevels[user.id] || { xp: 0, level: 0 };
             const { level, xpForNext, xpNeeded } = calculateLevel(userData.xp);
             const sorted = Object.entries(userLevels).sort(([, a], [, b]) => b.xp - a.xp);
             const rank = sorted.findIndex(([id]) => id === user.id) + 1;
-            const rankCard = new RankCardBuilder().setAvatar(user.displayAvatarURL({ extension: 'png' })).setRank(rank || 1).setLevel(level).setCurrentXP(xpNeeded).setRequiredXP(xpForNext).setUsername(user.username).setDisplayName(member.displayName).setBackground(RANK_CARD_BACKGROUND_URL);
-            try {
-                const data = await rankCard.build({ format: 'png' });
-                await interaction.editReply({ files: [new AttachmentBuilder(data, { name: 'rank.png' })] });
-            } catch (e) {
-                console.error(e);
-                await interaction.editReply("Failed to generate rank card.");
-            }
+
+            const embed = new EmbedBuilder()
+                .setTitle(`🐰 Rank Card: ${user.username}`)
+                .setThumbnail(user.displayAvatarURL())
+                .addFields(
+                    { name: 'Rank', value: `#${rank || 'N/A'}`, inline: true },
+                    { name: 'Level', value: `${level}`, inline: true },
+                    { name: 'XP Progress', value: `${xpNeeded} / ${xpForNext}`, inline: true }
+                )
+                .setColor(0x9B59B6); // Purple
+
+            await interaction.editReply({ embeds: [embed] });
             return;
         }
 
