@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "discord.js": "^14.14.1",
-    "@google/genai": "^0.0.12"
+    "@google/genai": "latest"
   },
   "engines": {
     "node": ">=16.9.0"
