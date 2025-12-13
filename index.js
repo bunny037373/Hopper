@@ -60,7 +60,7 @@ const STORMY_AVATAR_URL = 'https://i.imgur.com/r62Y0c7.png';
 
 // --- DISCORD IDs ---
 const GUILD_ID = '1369477266958192720';
-const TARGET_CHANNEL_ID = '1415134887232540764';
+const TARGET_CHANNEL_ID = '1415134887232540764'; // Image-only channel
 const LOG_CHANNEL_ID = '1414286807360602112';
 const TRANSCRIPT_CHANNEL_ID = '1414354204079689849';
 const SETUP_POST_CHANNEL = '1445628128423579660';
@@ -218,7 +218,7 @@ async function moderateNickname(member) {
             if (member.manageable) {
                 await member.setNickname("[moderated nickname]");
                 const log = member.guild.channels.cache.get(LOG_CHANNEL_ID);
-                if (log) log.send(`🛡️ **Nickname Moderated**\nUser: <@${member.id}>\nOld Name: ||${member.user.username}||`);
+                if (log) log.send(`<:thinking_preston:1448751103822004437> **Nickname Moderated**\nUser: <@${member.id}>\nOld Name: ||${member.user.username}||`);
                 return true;
             }
         } catch (err) {
@@ -267,7 +267,6 @@ client.once('ready', async () => {
         new SlashCommandBuilder().setName('help').setDescription('Get help'),
         new SlashCommandBuilder().setName('serverinfo').setDescription('Server info'),
         new SlashCommandBuilder().setName('clear').setDescription('Clear messages').addIntegerOption(opt => opt.setName('number').setDescription('Number').setRequired(true)),
-        // REMOVED lock, unlock, quest
         new SlashCommandBuilder().setName('addrole').setDescription('Add a role to a user').addUserOption(opt => opt.setName('user').setDescription('The user').setRequired(true)).addRoleOption(opt => opt.setName('role').setDescription('The role').setRequired(true)),
         new SlashCommandBuilder().setName('userinfo').setDescription('User info').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(false)),
         new SlashCommandBuilder().setName('daily').setDescription('Claim daily XP'),
@@ -305,10 +304,10 @@ client.on('interactionCreate', async (interaction) => {
             const text = interaction.options.getString('text');
             if (AI_ENABLED) {
                 const { isToxic } = await checkMessageToxicity(text);
-                if (isToxic) return interaction.reply({ content: "❌ Blocked by filter.", ephemeral: true });
+                if (isToxic) return interaction.reply({ content: "<:scaredcloudy:1448751027950977117> Blocked by filter.", ephemeral: true });
             }
             await interaction.channel.send(text);
-            return interaction.reply({ content: "✅ Sent", ephemeral: true });
+            return interaction.reply({ content: "<:cheeringstormy:1448751467400790206> Sent", ephemeral: true });
         }
 
         if (interaction.commandName === 'sayrp') {
@@ -316,7 +315,7 @@ client.on('interactionCreate', async (interaction) => {
             const msg = interaction.options.getString('message');
             if (AI_ENABLED) {
                 const { isToxic } = await checkMessageToxicity(msg);
-                if (isToxic) return interaction.reply({ content: "❌ Message blocked by filter.", ephemeral: true });
+                if (isToxic) return interaction.reply({ content: "<:scaredcloudy:1448751027950977117> Message blocked by filter.", ephemeral: true });
             }
             let payload = { content: '', files: [] };
             if (char === 'stormy') {
@@ -328,19 +327,18 @@ client.on('interactionCreate', async (interaction) => {
                 payload.content = `**Hops (Bot):** ${msg}`;
             }
             await interaction.channel.send(payload);
-            return interaction.reply({ content: `✅ Sent as ${char}`, ephemeral: true });
+            return interaction.reply({ content: `<:cheeringstormy:1448751467400790206> Sent as ${char}`, ephemeral: true });
         }
 
         if (interaction.commandName === 'ask') {
             await interaction.deferReply();
-            if (!AI_ENABLED) return interaction.editReply('❌ AI is disabled (Missing Key).');
+            if (!AI_ENABLED) return interaction.editReply('<:scaredcloudy:1448751027950977117> AI is disabled (Missing Key).');
             const prompt = interaction.options.getString('prompt');
             const manualFilter = filterMessageManually(prompt);
-            if (manualFilter.isSevere || manualFilter.isMild) return interaction.editReply('❌ Filtered.');
+            if (manualFilter.isSevere || manualFilter.isMild) return interaction.editReply('<:scaredcloudy:1448751027950977117> Filtered.');
             const { isToxic } = await checkMessageToxicity(prompt);
-            if (isToxic) return interaction.editReply('❌ Filtered by AI.');
+            if (isToxic) return interaction.editReply('<:scaredcloudy:1448751027950977117> Filtered by AI.');
             try {
-                // Updated System Instruction with Emojis
                 const systemInstruction = `You are Hops Bunny, an assistant for 'Stormy and Hops'. Use Google Search. Only use sources: stormy-and-hops.fandom.com, stormyandhops.netlify.app, X.com/stormyandhops, YouTube.com/stormyandhops. 
                 
                 Use these emojis depending on what they are searching for for Stormy and hops:
@@ -355,7 +353,6 @@ client.on('interactionCreate', async (interaction) => {
                 await interaction.editReply(`🐰 **Hopper response:**\n\n${result.text.slice(0, 1900)}`);
             } catch (error) {
                 console.error(error);
-                // Updated AI Error Message
                 const futureTime = new Date(Date.now() + 5 * 60000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                 await interaction.editReply(`<:scaredcloudy:1448751027950977117> uhoh I am unable to get information right now please wait until ${futureTime} <:happymissdiamond:1448752668259647619>`);
             }
@@ -374,10 +371,9 @@ client.on('interactionCreate', async (interaction) => {
             const amount = interaction.options.getInteger('number');
             if (amount < 1 || amount > 100) return interaction.reply({ content: '1-100 only', ephemeral: true });
             await interaction.channel.bulkDelete(amount, true);
-            return interaction.reply({ content: '✅ Cleared.', ephemeral: true });
+            return interaction.reply({ content: '<:cheeringstormy:1448751467400790206> Cleared.', ephemeral: true });
         }
 
-        // --- NEW Add Role Command ---
         if (interaction.commandName === 'addrole') {
             const user = interaction.options.getUser('user');
             const role = interaction.options.getRole('role');
@@ -387,9 +383,9 @@ client.on('interactionCreate', async (interaction) => {
             
             try {
                 await member.roles.add(role);
-                return interaction.reply(`✅ Added role ${role.name} to ${user.tag}`);
+                return interaction.reply(`<:cheeringstormy:1448751467400790206> Added role ${role.name} to ${user.tag}`);
             } catch (e) {
-                return interaction.reply({ content: "❌ Failed to add role (Check my permissions).", ephemeral: true });
+                return interaction.reply({ content: "<:scaredcloudy:1448751027950977117> Failed to add role (Check my permissions).", ephemeral: true });
             }
         }
 
@@ -399,7 +395,7 @@ client.on('interactionCreate', async (interaction) => {
             if (dailyCooldown.has(userId) && now < dailyCooldown.get(userId)) return interaction.reply({ content: "❌ Cooldown.", ephemeral: true });
             await addXP(interaction.member, 500);
             dailyCooldown.set(userId, now + DAILY_COOLDOWN_MS);
-            return interaction.reply("✅ Claimed daily!");
+            return interaction.reply("<:happymissdiamond:1448752668259647619> Claimed daily!");
         }
 
         if (interaction.commandName === 'leaderboard') {
@@ -568,36 +564,49 @@ client.on('interactionCreate', async (interaction) => {
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
-    // Filters
+    // --- 1. IMAGE ONLY CHANNEL CHECK (FIRST LAYER) ---
+    if (message.channel.id === TARGET_CHANNEL_ID) {
+        if (message.attachments.size === 0 && message.stickers.size === 0) {
+            await message.delete().catch(() => {});
+            return; // Deleted because text-only.
+        }
+        // If image exists, proceed to filters (allow text with image, but check for toxicity).
+    }
+
+    // --- 2. FILTERS (SECOND LAYER) ---
     const manualFilter = filterMessageManually(message.content);
     if (manualFilter.isSevere) {
         await message.delete().catch(() => {});
         if (message.member.manageable) message.member.timeout(60 * 60 * 1000, "Severe Filter").catch(() => {});
         const log = client.channels.cache.get(LOG_CHANNEL_ID);
-        if (log) log.send(`🚨 Severe Violation: ${message.author.tag}`);
+        if (log) log.send(`<:ragingpaul:1448752763164037295> Severe Violation: ${message.author.tag}`);
         return;
     }
     if (manualFilter.isMild) {
         await message.delete().catch(() => {});
         return;
     }
+    
+    // AI CHECK (Double Check)
     if (AI_ENABLED) {
         const { isToxic } = await checkMessageToxicity(message.content);
         if (isToxic) {
             await message.delete().catch(() => {});
             if (message.member.manageable) message.member.timeout(10 * 60 * 1000, "AI Filter").catch(() => {});
+            const log = client.channels.cache.get(LOG_CHANNEL_ID);
+            if (log) log.send(`<:scaredcloudy:1448751027950977117> AI Filter Violation: ${message.author.tag}`);
             return;
         }
     }
 
-    // AFK LOGIC - UPDATED
-    // 1. Check if the Author is coming back
+    // --- 3. AFK LOGIC ---
+    // User returning
     if (afkStatus.has(message.author.id)) {
         afkStatus.delete(message.author.id);
         message.reply(`welcome back ${message.author} I have removed your AFK <:happymissdiamond:1448752668259647619>`).then(m => setTimeout(() => m.delete(), 5000));
     }
     
-    // 2. Check if someone PINGED an AFK user
+    // User being pinged
     if (message.mentions.users.size > 0) {
         message.mentions.users.forEach(u => {
             if (afkStatus.has(u.id)) {
@@ -606,14 +615,14 @@ client.on('messageCreate', async (message) => {
         });
     }
     
-    // 3. Set AFK Command
+    // Set AFK
     if (message.content.toLowerCase().startsWith('?afk')) {
         const reason = message.content.slice(4).trim() || 'AFK';
         afkStatus.set(message.author.id, { reason, timestamp: Date.now() });
         return message.reply(`afk ${message.author} ${reason} has been set`);
     }
 
-    // XP
+    // --- 4. XP LOGIC ---
     if (message.channel.id !== AFK_XP_EXCLUSION_CHANNEL_ID) {
         const userId = message.author.id;
         const now = Date.now();
