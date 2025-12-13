@@ -11,7 +11,7 @@ const {
     PermissionsBitField,
     ThreadChannel,
     AttachmentBuilder,
-    EmbedBuilder // Added for text-based ranks
+    EmbedBuilder
 } = require('discord.js');
 const http = require('http');
 const fs = require('fs');
@@ -55,7 +55,6 @@ const client = new Client({
 
 // ** LOCAL IMAGE CONFIG **
 const STORMY_IMAGE_FILE = './stormy.png';
-// These URLs are used for Embed thumbnails now
 const RANK_CARD_BACKGROUND_URL = 'https://i.imgur.com/r62Y0c7.png';
 const STORMY_AVATAR_URL = 'https://i.imgur.com/r62Y0c7.png';
 
@@ -268,12 +267,11 @@ client.once('ready', async () => {
         new SlashCommandBuilder().setName('help').setDescription('Get help'),
         new SlashCommandBuilder().setName('serverinfo').setDescription('Server info'),
         new SlashCommandBuilder().setName('clear').setDescription('Clear messages').addIntegerOption(opt => opt.setName('number').setDescription('Number').setRequired(true)),
-        new SlashCommandBuilder().setName('lock').setDescription('Lock channel').addChannelOption(opt => opt.setName('channel').setDescription('Channel').setRequired(false)),
-        new SlashCommandBuilder().setName('unlock').setDescription('Unlock channel').addChannelOption(opt => opt.setName('channel').setDescription('Channel').setRequired(false)),
+        // REMOVED lock, unlock, quest
+        new SlashCommandBuilder().setName('addrole').setDescription('Add a role to a user').addUserOption(opt => opt.setName('user').setDescription('The user').setRequired(true)).addRoleOption(opt => opt.setName('role').setDescription('The role').setRequired(true)),
         new SlashCommandBuilder().setName('userinfo').setDescription('User info').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(false)),
         new SlashCommandBuilder().setName('daily').setDescription('Claim daily XP'),
         new SlashCommandBuilder().setName('leaderboard').setDescription('Show top members'),
-        new SlashCommandBuilder().setName('quest').setDescription('Get a quest'),
         new SlashCommandBuilder().setName('rank').setDescription('Show rank card').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(false)),
         new SlashCommandBuilder().setName('givexp').setDescription('Give XP').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true)).addIntegerOption(opt => opt.setName('xp').setDescription('XP').setRequired(true)),
         new SlashCommandBuilder().setName('takeawayxp').setDescription('Take XP').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true)).addIntegerOption(opt => opt.setName('xp').setDescription('XP').setRequired(true)),
@@ -300,7 +298,7 @@ client.on('interactionCreate', async (interaction) => {
     // --- SLASH COMMANDS ---
     if (interaction.isChatInputCommand()) {
         const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ModerateMembers);
-        const modCommands = ['kick', 'ban', 'unban', 'timeout', 'setup', 'givexp', 'takeawayxp', 'changelevel', 'clear', 'lock', 'unlock'];
+        const modCommands = ['kick', 'ban', 'unban', 'timeout', 'setup', 'givexp', 'takeawayxp', 'changelevel', 'clear', 'addrole'];
         if (modCommands.includes(interaction.commandName) && !isMod) return interaction.reply({ content: '❌ Mods only', ephemeral: true });
 
         if (interaction.commandName === 'say') {
@@ -342,7 +340,12 @@ client.on('interactionCreate', async (interaction) => {
             const { isToxic } = await checkMessageToxicity(prompt);
             if (isToxic) return interaction.editReply('❌ Filtered by AI.');
             try {
-                const systemInstruction = "You are Hops Bunny, an assistant for 'Stormy and Hops'. Use Google Search. Only use sources: stormy-and-hops.fandom.com, stormyandhops.netlify.app, X.com/stormyandhops, YouTube.com/stormyandhops.";
+                // Updated System Instruction with Emojis
+                const systemInstruction = `You are Hops Bunny, an assistant for 'Stormy and Hops'. Use Google Search. Only use sources: stormy-and-hops.fandom.com, stormyandhops.netlify.app, X.com/stormyandhops, YouTube.com/stormyandhops. 
+                
+                Use these emojis depending on what they are searching for for Stormy and hops:
+                <:MrLuck:1448751843885842623> <:cheeringstormy:1448751467400790206> <:concerdnedjin:1448751740030816481> <:happymissdiamond:1448752668259647619> <:madscarlet:1448751667863355482> <:heartkatie:1448751305756639372> <:mischevousoscar:1448752833951305789> <:questioninghops:1448751559067308053> <:ragingpaul:1448752763164037295> <:thinking_preston:1448751103822004437> <:scaredcloudy:1448751027950977117> <:tiredscout:1448751394881278043> <:Stormyandhopslogo:1448502746113118291> <:1_plus_1_equals_2:1372781129861435413> <:Evil_paul:1428932282818760785>`;
+                
                 const result = await ai.models.generateContent({
                     model: aiModel,
                     contents: [{ role: "user", parts: [{ text: prompt }] }],
@@ -352,7 +355,9 @@ client.on('interactionCreate', async (interaction) => {
                 await interaction.editReply(`🐰 **Hopper response:**\n\n${result.text.slice(0, 1900)}`);
             } catch (error) {
                 console.error(error);
-                await interaction.editReply('❌ AI Error.');
+                // Updated AI Error Message
+                const futureTime = new Date(Date.now() + 5 * 60000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                await interaction.editReply(`<:scaredcloudy:1448751027950977117> uhoh I am unable to get information right now please wait until ${futureTime} <:happymissdiamond:1448752668259647619>`);
             }
             return;
         }
@@ -372,14 +377,19 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: '✅ Cleared.', ephemeral: true });
         }
 
-        if (interaction.commandName === 'lock' || interaction.commandName === 'unlock') {
-            const channel = interaction.options.getChannel('channel') || interaction.channel;
-            const lock = interaction.commandName === 'lock';
+        // --- NEW Add Role Command ---
+        if (interaction.commandName === 'addrole') {
+            const user = interaction.options.getUser('user');
+            const role = interaction.options.getRole('role');
+            const member = interaction.guild.members.cache.get(user.id);
+            
+            if (!member) return interaction.reply({ content: "❌ User not found.", ephemeral: true });
+            
             try {
-                await channel.permissionOverwrites.edit(channel.guild.roles.everyone, { SendMessages: lock ? false : null });
-                return interaction.reply(`✅ Channel ${lock ? 'Locked' : 'Unlocked'}`);
+                await member.roles.add(role);
+                return interaction.reply(`✅ Added role ${role.name} to ${user.tag}`);
             } catch (e) {
-                return interaction.reply({ content: "Failed to manage channel.", ephemeral: true });
+                return interaction.reply({ content: "❌ Failed to add role (Check my permissions).", ephemeral: true });
             }
         }
 
@@ -392,9 +402,6 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply("✅ Claimed daily!");
         }
 
-        if (interaction.commandName === 'quest') return interaction.reply({ content: "📜 Quest system under construction.", ephemeral: true });
-
-        // --- LEADERBOARD (Embed Only - No Canvacord) ---
         if (interaction.commandName === 'leaderboard') {
             await interaction.deferReply();
             try {
@@ -421,7 +428,6 @@ client.on('interactionCreate', async (interaction) => {
             return;
         }
 
-        // --- RANK (Embed Only - No Canvacord) ---
         if (interaction.commandName === 'rank') {
             await interaction.deferReply();
             const user = interaction.options.getUser('user') || interaction.user;
@@ -584,20 +590,27 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // AFK
+    // AFK LOGIC - UPDATED
+    // 1. Check if the Author is coming back
     if (afkStatus.has(message.author.id)) {
         afkStatus.delete(message.author.id);
-        message.reply("Welcome back! AFK removed.").then(m => setTimeout(() => m.delete(), 5000));
+        message.reply(`welcome back ${message.author} I have removed your AFK <:happymissdiamond:1448752668259647619>`).then(m => setTimeout(() => m.delete(), 5000));
     }
+    
+    // 2. Check if someone PINGED an AFK user
     if (message.mentions.users.size > 0) {
         message.mentions.users.forEach(u => {
-            if (afkStatus.has(u.id)) message.reply(`${u.username} is AFK: ${afkStatus.get(u.id).reason}`);
+            if (afkStatus.has(u.id)) {
+                message.reply(`${u.username} is currently AFK (${afkStatus.get(u.id).reason})`);
+            }
         });
     }
+    
+    // 3. Set AFK Command
     if (message.content.toLowerCase().startsWith('?afk')) {
         const reason = message.content.slice(4).trim() || 'AFK';
         afkStatus.set(message.author.id, { reason, timestamp: Date.now() });
-        return message.reply(`Set AFK: ${reason}`);
+        return message.reply(`afk ${message.author} ${reason} has been set`);
     }
 
     // XP
