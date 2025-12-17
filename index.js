@@ -13,6 +13,8 @@ const {
     AttachmentBuilder,
     EmbedBuilder
 } = require('discord.js');
+// --- ADDED VOICE IMPORT ---
+const { joinVoiceChannel } = require('@discordjs/voice');
 const http = require('http');
 const fs = require('fs');
 
@@ -47,7 +49,9 @@ const client = new Client({
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.GuildMessageReactions
+        GatewayIntentBits.GuildMessageReactions,
+        // --- ADDED VOICE STATE INTENT (REQUIRED FOR VC) ---
+        GatewayIntentBits.GuildVoiceStates 
     ]
 });
 
@@ -281,6 +285,8 @@ client.once('ready', async () => {
         new SlashCommandBuilder().setName('unban').setDescription('Unban member').addStringOption(opt => opt.setName('userid').setDescription('User ID').setRequired(true)),
         new SlashCommandBuilder().setName('timeout').setDescription('Timeout member').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true)).addIntegerOption(opt => opt.setName('minutes').setDescription('Minutes').setRequired(true)),
         new SlashCommandBuilder().setName('setup').setDescription('Post ticket panel'),
+        // --- ADDED JOINVC COMMAND ---
+        new SlashCommandBuilder().setName('joinvc').setDescription('Join your current voice channel'),
     ].map(c => c.toJSON());
 
     const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
@@ -300,6 +306,28 @@ client.on('interactionCreate', async (interaction) => {
         const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ModerateMembers);
         const modCommands = ['kick', 'ban', 'unban', 'timeout', 'setup', 'givexp', 'takeawayxp', 'changelevel', 'clear', 'addrole'];
         if (modCommands.includes(interaction.commandName) && !isMod) return interaction.reply({ content: '❌ Mods only', ephemeral: true });
+
+        // --- NEW JOIN VC LOGIC ---
+        if (interaction.commandName === 'joinvc') {
+            const voiceChannel = interaction.member.voice.channel;
+            
+            if (!voiceChannel) {
+                return interaction.reply({ content: "❌ You need to be in a voice channel first so I know where to go!", ephemeral: true });
+            }
+
+            try {
+                joinVoiceChannel({
+                    channelId: voiceChannel.id,
+                    guildId: interaction.guild.id,
+                    adapterCreator: interaction.guild.voiceAdapterCreator,
+                    selfDeaf: true,
+                });
+                return interaction.reply({ content: `🔊 Joined **${voiceChannel.name}**!`, ephemeral: true });
+            } catch (error) {
+                console.error("Failed to join VC:", error);
+                return interaction.reply({ content: "❌ I couldn't join that channel. Check my permissions!", ephemeral: true });
+            }
+        }
 
         if (interaction.commandName === 'say') {
             const text = interaction.options.getString('text');
