@@ -57,6 +57,11 @@ const client = new Client({
 
 // ====================== CONFIGURATION ======================
 
+// ** VIRUSTOTAL CONFIG (NEW) **
+// Make sure to add VIRUSTOTAL_API_KEY to your environment variables
+const VIRUSTOTAL_API_KEY = process.env.VIRUSTOTAL_API_KEY; 
+const VT_SCAN_THRESHOLD = 1; // Delete if 1 or more engines flag it as malicious
+
 // ** LOCAL IMAGE CONFIG **
 const STORMY_IMAGE_FILE = './stormy.png';
 const RANK_CARD_BACKGROUND_URL = 'https://i.imgur.com/r62Y0c7.png';
@@ -186,7 +191,6 @@ function filterMessageManually(text) {
 }
 
 // ================= AI CONFIG =================
-// UPDATED: Changed to BLOCK_MEDIUM_AND_ABOVE to fix the "There's a lot of things we can talk about" error
 const safetySettings = [
     { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
     { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
@@ -651,6 +655,51 @@ client.on('interactionCreate', async (interaction) => {
 // ================= MESSAGE CREATE =================
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
+
+    // --- 0. VIRUSTOTAL SCANNER (NEW ADDTION) ---
+    if (VIRUSTOTAL_API_KEY) {
+        const urlRegex = /(https?:\/\/[^\s]+)/g;
+        const urls = message.content.match(urlRegex);
+        
+        if (urls) {
+            for (const url of urls) {
+                try {
+                    // Encode URL for VirusTotal v3 (Base64URL without padding)
+                    const urlId = Buffer.from(url).toString('base64')
+                        .replace(/\+/g, '-')
+                        .replace(/\//g, '_')
+                        .replace(/=+$/, '');
+
+                    const response = await fetch(`https://www.virustotal.com/api/v3/urls/${urlId}`, {
+                        method: 'GET',
+                        headers: { 'x-apikey': VIRUSTOTAL_API_KEY }
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        const stats = data.data.attributes.last_analysis_stats;
+                        
+                        // Check if it meets the malicious threshold
+                        if (stats.malicious >= VT_SCAN_THRESHOLD) {
+                            await message.delete().catch(() => {});
+                            const log = client.channels.cache.get(LOG_CHANNEL_ID);
+                            
+                            // Send warning to channel
+                            const warningMsg = await message.channel.send(`⚠️ ${message.author}, that link was detected as malicious and removed.`);
+                            setTimeout(() => warningMsg.delete().catch(() => {}), 10000);
+
+                            // Log it
+                            if (log) log.send(`<:scaredcloudy:1448751027950977117> **Malicious Link Deleted**\nUser: ${message.author.tag}\nLink: ||${url}|| (Flagged by ${stats.malicious} engines)`);
+                            return; // Stop processing this message
+                        }
+                    }
+                } catch (err) {
+                    // Fail silently to not spam logs on errors
+                    console.error("VT Scan Error:", err);
+                }
+            }
+        }
+    }
 
     // --- 1. IMAGE ONLY CHANNEL CHECK (FIRST LAYER) ---
     if (message.channel.id === TARGET_CHANNEL_ID) {
