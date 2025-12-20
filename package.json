@@ -14,7 +14,7 @@
     "ffmpeg-static": "^5.2.0"
   },
   "engines": {
-    "node": ">=16.9.0"
+    "node": ">=18.0.0"
   },
   "keywords": [
     "discord",
