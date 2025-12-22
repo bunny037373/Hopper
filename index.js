@@ -264,7 +264,7 @@ client.once('ready', async () => {
             await guild.leave().catch(e => console.error(e));
         }
     });
-    client.user.setPresence({ activities: [{ name: 'hopping around Toon Springs', type: 0 }], status: 'online' });
+    client.user.setPresence({ activities: [{ name: 'I AM DEAD', type: 0 }], status: 'online' });
     const guild = client.guilds.cache.get(GUILD_ID);
     if (guild) startAutomatedNicknameScan(guild);
 
@@ -812,3 +812,4 @@ http.createServer((req, res) => {
     res.writeHead(200);
     res.end('Bot Running');
 }).listen(PORT, () => console.log(`Web server listening on port ${PORT}`));
+
