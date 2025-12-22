@@ -33,9 +33,7 @@ if (!AI_ENABLED) {
     console.error("❌ GEMINI_API_KEY not found. AI commands (/ask) and AI moderation are DISABLED.");
 } else {
     try {
-        // FIXED: Use the standard constructor
         const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-        // FIXED: Use an existing model (1.5 Flash)
         aiModelInstance = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     } catch (e) {
         console.error("❌ Failed to initialize GoogleGenerativeAI.", e);
@@ -55,19 +53,12 @@ const client = new Client({
 });
 
 // ====================== CONFIGURATION ======================
-
-// ** LOCAL IMAGE CONFIG **
 const STORMY_IMAGE_FILE = './stormy.png';
-const RANK_CARD_BACKGROUND_URL = 'https://i.imgur.com/r62Y0c7.png';
-const STORMY_AVATAR_URL = 'https://i.imgur.com/r62Y0c7.png';
-
-// --- DISCORD IDs ---
 const GUILD_ID = '1369477266958192720';
 const TARGET_CHANNEL_ID = '1415134887232540764'; // Image-only channel
 const LOG_CHANNEL_ID = '1414286807360602112'; // Moderation Logs
 const TRANSCRIPT_CHANNEL_ID = '1414354204079689849';
 const SETUP_POST_CHANNEL = '1445628128423579660';
-const RP_CHANNEL_ID = '1421219064985948346';
 const RP_CATEGORY_ID = '1446530920650899536';
 const AFK_XP_EXCLUSION_CHANNEL_ID = '1414352027034583080';
 const BOOSTER_ROLE_ID = '1400596498969923685';
@@ -87,8 +78,8 @@ const LEVEL_ROLES = {
     100: '1441563487565250692',
 };
 
-// FIXED: Increased to 10 minutes to prevent API bans
-const NICKNAME_SCAN_INTERVAL = 600 * 1000;
+// Scan every 10 minutes to avoid bans
+const NICKNAME_SCAN_INTERVAL = 600 * 1000; 
 const HELP_MESSAGE = `hello! Do you need help?
 Please go to https://discord.com/channels/${GUILD_ID}/1414304297122009099
 and for more assistance please use
@@ -102,7 +93,6 @@ const joinTracker = new Map();
 const afkStatus = new Map();
 
 // ====================== HELPER FUNCTIONS ======================
-
 function calculateLevel(totalXp) {
     let level = 0;
     let xpRemaining = totalXp;
@@ -236,7 +226,7 @@ function startAutomatedNicknameScan(guild) {
     const runScan = async () => {
         if (!guild) return;
         try {
-            const members = guild.members.cache; // Use cache to avoid rate limits
+            const members = guild.members.cache;
             for (const [id, member] of members) {
                 if (member.user.bot) continue;
                 await moderateNickname(member);
@@ -250,7 +240,6 @@ function startAutomatedNicknameScan(guild) {
 }
 
 // ================= BOT EVENTS =================
-
 client.once('ready', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
     client.guilds.cache.forEach(async (guild) => {
@@ -704,19 +693,6 @@ client.on('messageCreate', async (message) => {
             await addXP(message.member, gain, message);
             xpCooldown.set(userId, now + XP_COOLDOWN_MS);
         }
-    }
-});
-
-client.on('guildMemberAdd', async (member) => {
-    moderateNickname(member);
-    const now = Date.now();
-    const data = joinTracker.get(member.id) || { count: 0, lastJoin: 0 };
-    if (now - data.lastJoin > 15 * 60 * 1000) data.count = 0;
-    data.count++;
-    data.lastJoin = now;
-    joinTracker.set(member.id, data);
-    if (data.count >= 10 && member.bannable) {
-        await member.ban({ reason: 'Rapid Join' });
     }
 });
 
