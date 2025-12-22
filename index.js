@@ -13,15 +13,11 @@ const {
     AttachmentBuilder,
     EmbedBuilder
 } = require('discord.js');
-
-// --- VOICE IMPORT ---
-const { joinVoiceChannel, getVoiceConnection } = require('@discordjs/voice');
 const http = require('http');
 const fs = require('fs');
 
-// --- AI Import (FIXED LIBRARY) ---
-// Make sure to run: npm install @google/generative-ai
-const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require('@google/generative-ai');
+// --- AI Import ---
+const { GoogleGenAI, HarmCategory, HarmBlockThreshold } = require('@google/genai');
 
 // Check for the mandatory token environment variable
 if (!process.env.TOKEN) {
@@ -30,18 +26,16 @@ if (!process.env.TOKEN) {
 }
 
 // --- AI Key Check ---
-let aiModelInstance;
+let ai;
 let AI_ENABLED = !!process.env.GEMINI_API_KEY;
 
 if (!AI_ENABLED) {
     console.error("❌ GEMINI_API_KEY not found. AI commands (/ask) and AI moderation are DISABLED.");
 } else {
     try {
-        // FIXED: Correct Constructor for the standard library
-        const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-        aiModelInstance = genAI.getGenerativeModel({ model: "gemini-1.5-flash" }); // Updated to 1.5 Flash (Standard)
+        ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
     } catch (e) {
-        console.error("❌ Failed to initialize GoogleGenerativeAI.", e);
+        console.error("❌ Failed to initialize GoogleGenAI.", e);
         AI_ENABLED = false;
     }
 }
@@ -53,18 +47,16 @@ const client = new Client({
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.GuildMessageReactions,
-        GatewayIntentBits.GuildVoiceStates
+        GatewayIntentBits.GuildMessageReactions
     ]
 });
 
 // ====================== CONFIGURATION ======================
 
-const VIRUSTOTAL_API_KEY = process.env.VIRUSTOTAL_API_KEY; 
-const VT_SCAN_THRESHOLD = 1;
-
 // ** LOCAL IMAGE CONFIG **
 const STORMY_IMAGE_FILE = './stormy.png';
+const RANK_CARD_BACKGROUND_URL = 'https://i.imgur.com/r62Y0c7.png';
+const STORMY_AVATAR_URL = 'https://i.imgur.com/r62Y0c7.png';
 
 // --- DISCORD IDs ---
 const GUILD_ID = '1369477266958192720';
@@ -72,6 +64,7 @@ const TARGET_CHANNEL_ID = '1415134887232540764'; // Image-only channel
 const LOG_CHANNEL_ID = '1414286807360602112'; // Moderation Logs
 const TRANSCRIPT_CHANNEL_ID = '1414354204079689849';
 const SETUP_POST_CHANNEL = '1445628128423579660';
+const RP_CHANNEL_ID = '1421219064985948346';
 const RP_CATEGORY_ID = '1446530920650899536';
 const AFK_XP_EXCLUSION_CHANNEL_ID = '1414352027034583080';
 const BOOSTER_ROLE_ID = '1400596498969923685';
@@ -91,9 +84,7 @@ const LEVEL_ROLES = {
     100: '1441563487565250692',
 };
 
-// FIXED: Increased to 10 minutes to prevent API bans
-const NICKNAME_SCAN_INTERVAL = 600 * 1000; 
-
+const NICKNAME_SCAN_INTERVAL = 5 * 1000;
 const HELP_MESSAGE = `hello! Do you need help?
 Please go to https://discord.com/channels/${GUILD_ID}/1414304297122009099
 and for more assistance please use
@@ -112,8 +103,6 @@ function calculateLevel(totalXp) {
     let level = 0;
     let xpRemaining = totalXp;
     let xpNeeded = 100;
-    // Note: This loop is fine for lower levels, but for millions of XP a formula is better.
-    // Keeping it as is for consistency with your original code.
     while (xpRemaining >= xpNeeded) {
         xpRemaining -= xpNeeded;
         level++;
@@ -176,7 +165,6 @@ function filterMessageManually(text) {
     if (!text) return { isSevere: false, isMild: false };
     let normalized = text.toLowerCase().replace(/[^a-z0-9]/g, '');
     let leetNormalized = normalized.split('').map(char => LEET_MAP[char] || char).join('');
-    
     const checkNormalizedText = (list, normText) => {
         for (const badWord of list) {
             if (normText.includes(badWord)) {
@@ -186,40 +174,36 @@ function filterMessageManually(text) {
         }
         return null;
     };
-    
     let severeMatch = checkNormalizedText(SEVERE_WORDS, normalized) || checkNormalizedText(SEVERE_WORDS, leetNormalized);
     if (severeMatch) return { isSevere: true, isMild: false, matchedWord: severeMatch };
-    
     let mildMatch = checkNormalizedText(MILD_BAD_WORDS, normalized) || checkNormalizedText(MILD_BAD_WORDS, leetNormalized);
     if (mildMatch) return { isSevere: false, isMild: true, matchedWord: mildMatch };
-    
     return { isSevere: false, isMild: false, matchedWord: null };
 }
 
 // ================= AI CONFIG =================
+// UPDATED: Changed to BLOCK_MEDIUM_AND_ABOVE to fix the "There's a lot of things we can talk about" error
 const safetySettings = [
     { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
     { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
 ];
+const aiModel = 'gemini-2.5-flash';
 
 async function checkMessageToxicity(text) {
     if (!AI_ENABLED) return { isToxic: false, blockCategory: 'AI_DISABLED' };
     if (!text || text.length === 0) return { isToxic: false, blockCategory: 'None' };
     try {
-        const response = await aiModelInstance.generateContent({
-            contents: [{ role: "user", parts: [{ text: `Analyze for hate speech/harassment (Yes/No): "${text}"` }] }],
+        const response = await ai.models.generateContent({
+            model: aiModel,
+            contents: [{ role: "user", parts: [{ text: `Analyze the following user message for hate speech, slurs, harassment: "${text}"` }] }],
             safetySettings: safetySettings,
         });
-        
-        // Gemini throws an error or returns empty candidate if blocked by safety settings
-        if (response.response && response.response.candidates && response.response.candidates.length > 0) {
-           const candidate = response.response.candidates[0];
-           if (candidate.finishReason === 'SAFETY') return { isToxic: true, blockCategory: 'Safety Block' };
+        if (response.candidates && response.candidates.length > 0) {
+            const candidate = response.candidates[0];
+            if (candidate.finishReason === 'SAFETY') return { isToxic: true, blockCategory: 'Safety Block' };
         }
         return { isToxic: false, blockCategory: 'None' };
     } catch (error) {
-        // If error contains "SAFETY", it was blocked
-        if (error.toString().includes("SAFETY")) return { isToxic: true, blockCategory: 'Safety Block' };
         console.error('Gemini Moderation API Error:', error);
         return { isToxic: false, blockCategory: 'API_Error' };
     }
@@ -249,9 +233,7 @@ function startAutomatedNicknameScan(guild) {
     const runScan = async () => {
         if (!guild) return;
         try {
-            // FIXED: Don't fetch ALL members every time unless cache is empty.
-            // Using cache is safer for rate limits.
-            const members = guild.members.cache;
+            const members = await guild.members.fetch();
             for (const [id, member] of members) {
                 if (member.user.bot) continue;
                 await moderateNickname(member);
@@ -268,16 +250,13 @@ function startAutomatedNicknameScan(guild) {
 
 client.once('ready', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
-    
-    // Check Guilds
     client.guilds.cache.forEach(async (guild) => {
         if (guild.id !== GUILD_ID) {
             console.log(`❌ Found unauthorized server: ${guild.name}. Leaving...`);
             await guild.leave().catch(e => console.error(e));
         }
     });
-
-    client.user.setPresence({ activities: [{ name: 'I AM DEAD', type: 0 }], status: 'online' });
+    client.user.setPresence({ activities: [{ name: 'hopping around Toon Springs', type: 0 }], status: 'online' });
     const guild = client.guilds.cache.get(GUILD_ID);
     if (guild) startAutomatedNicknameScan(guild);
 
@@ -302,7 +281,6 @@ client.once('ready', async () => {
         new SlashCommandBuilder().setName('unban').setDescription('Unban member').addStringOption(opt => opt.setName('userid').setDescription('User ID').setRequired(true)),
         new SlashCommandBuilder().setName('timeout').setDescription('Timeout member').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true)).addIntegerOption(opt => opt.setName('minutes').setDescription('Minutes').setRequired(true)),
         new SlashCommandBuilder().setName('setup').setDescription('Post ticket panel'),
-        new SlashCommandBuilder().setName('joinvc').setDescription('Join your current voice channel'),
     ].map(c => c.toJSON());
 
     const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
@@ -322,32 +300,6 @@ client.on('interactionCreate', async (interaction) => {
         const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ModerateMembers);
         const modCommands = ['kick', 'ban', 'unban', 'timeout', 'setup', 'givexp', 'takeawayxp', 'changelevel', 'clear', 'addrole'];
         if (modCommands.includes(interaction.commandName) && !isMod) return interaction.reply({ content: '❌ Mods only', ephemeral: true });
-
-        // --- FIXED JOIN VC LOGIC ---
-        if (interaction.commandName === 'joinvc') {
-            const voiceChannel = interaction.member.voice.channel;
-            
-            if (!voiceChannel) {
-                return interaction.reply({ content: "❌ You need to be in a voice channel first!", ephemeral: true });
-            }
-
-            try {
-                // Check if already in a connection in this guild and destroy it
-                const existingConnection = getVoiceConnection(interaction.guild.id);
-                if (existingConnection) existingConnection.destroy();
-
-                joinVoiceChannel({
-                    channelId: voiceChannel.id,
-                    guildId: interaction.guild.id,
-                    adapterCreator: interaction.guild.voiceAdapterCreator,
-                    selfDeaf: true,
-                });
-                return interaction.reply({ content: `🔊 Joined **${voiceChannel.name}**!`, ephemeral: true });
-            } catch (error) {
-                console.error("Failed to join VC:", error);
-                return interaction.reply({ content: "❌ I couldn't join that channel. Check my permissions or install ffmpeg!", ephemeral: true });
-            }
-        }
 
         if (interaction.commandName === 'say') {
             const text = interaction.options.getString('text');
@@ -383,24 +335,23 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.deferReply();
             if (!AI_ENABLED) return interaction.editReply('<:scaredcloudy:1448751027950977117> AI is disabled (Missing Key).');
             const prompt = interaction.options.getString('prompt');
-            
             const manualFilter = filterMessageManually(prompt);
             if (manualFilter.isSevere || manualFilter.isMild) return interaction.editReply('<:scaredcloudy:1448751027950977117> Filtered.');
-            
             const { isToxic } = await checkMessageToxicity(prompt);
             if (isToxic) return interaction.editReply('<:scaredcloudy:1448751027950977117> Filtered by AI.');
-            
             try {
-                const systemInstruction = `You are Hops Bunny, an assistant for 'Stormy and Hops'. Use these emojis:
+                const systemInstruction = `You are Hops Bunny, an assistant for 'Stormy and Hops'. Use Google Search. Only use sources: stormy-and-hops.fandom.com, stormyandhops.netlify.app, X.com/stormyandhops, YouTube.com/stormyandhops. 
+                
+                Use these emojis depending on what they are searching for for Stormy and hops:
                 <:MrLuck:1448751843885842623> <:cheeringstormy:1448751467400790206> <:concerdnedjin:1448751740030816481> <:happymissdiamond:1448752668259647619> <:madscarlet:1448751667863355482> <:heartkatie:1448751305756639372> <:mischevousoscar:1448752833951305789> <:questioninghops:1448751559067308053> <:ragingpaul:1448752763164037295> <:thinking_preston:1448751103822004437> <:scaredcloudy:1448751027950977117> <:tiredscout:1448751394881278043> <:Stormyandhopslogo:1448502746113118291> <:1_plus_1_equals_2:1372781129861435413> <:Evil_paul:1428932282818760785>`;
                 
-                const result = await aiModelInstance.generateContent({
-                    contents: [{ role: "user", parts: [{ text: `System Instruction: ${systemInstruction}\nUser Question: ${prompt}` }] }],
-                    safetySettings: safetySettings
+                const result = await ai.models.generateContent({
+                    model: aiModel,
+                    contents: [{ role: "user", parts: [{ text: prompt }] }],
+                    safetySettings: safetySettings,
+                    config: { systemInstruction, tools: [{ googleSearch: {} }] }
                 });
-                
-                const responseText = result.response.text();
-                await interaction.editReply(`🐰 **Hopper response:**\n\n${responseText.slice(0, 1900)}`);
+                await interaction.editReply(`🐰 **Hopper response:**\n\n${result.text.slice(0, 1900)}`);
             } catch (error) {
                 console.error(error);
                 const futureTime = new Date(Date.now() + 5 * 60000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -428,6 +379,7 @@ client.on('interactionCreate', async (interaction) => {
             const user = interaction.options.getUser('user');
             const role = interaction.options.getRole('role');
             const member = interaction.guild.members.cache.get(user.id);
+            
             if (!member) return interaction.reply({ content: "❌ User not found.", ephemeral: true });
             
             try {
@@ -465,7 +417,7 @@ client.on('interactionCreate', async (interaction) => {
                 const embed = new EmbedBuilder()
                     .setTitle('🏆 Toon Springs Leaderboard')
                     .setDescription(lbString || "No members found.")
-                    .setColor(0x00FF00); 
+                    .setColor(0x00FF00); // Green
 
                 await interaction.editReply({ embeds: [embed] });
             } catch (e) {
@@ -478,23 +430,23 @@ client.on('interactionCreate', async (interaction) => {
         if (interaction.commandName === 'rank') {
             await interaction.deferReply();
             const user = interaction.options.getUser('user') || interaction.user;
+            const member = interaction.guild.members.cache.get(user.id);
+            if (!member) return interaction.editReply("User not found.");
+
             const userData = userLevels[user.id] || { xp: 0, level: 0 };
             const { level, xpForNext, xpNeeded } = calculateLevel(userData.xp);
-            
             const sorted = Object.entries(userLevels).sort(([, a], [, b]) => b.xp - a.xp);
-            // FIXED: Handle user not in rank list yet
-            let rank = sorted.findIndex(([id]) => id === user.id) + 1;
-            if (rank === 0) rank = "Unranked";
+            const rank = sorted.findIndex(([id]) => id === user.id) + 1;
 
             const embed = new EmbedBuilder()
                 .setTitle(`🐰 Rank Card: ${user.username}`)
                 .setThumbnail(user.displayAvatarURL())
                 .addFields(
-                    { name: 'Rank', value: `#${rank}`, inline: true },
+                    { name: 'Rank', value: `#${rank || 'N/A'}`, inline: true },
                     { name: 'Level', value: `${level}`, inline: true },
                     { name: 'XP Progress', value: `${xpNeeded} / ${xpForNext}`, inline: true }
                 )
-                .setColor(0x9B59B6);
+                .setColor(0x9B59B6); // Purple
 
             await interaction.editReply({ embeds: [embed] });
             return;
@@ -616,6 +568,7 @@ client.on('interactionCreate', async (interaction) => {
             const transcript = msgs.reverse().map(m => `${m.author.tag}: ${m.content}`).join('\n');
             const tChannel = client.channels.cache.get(TRANSCRIPT_CHANNEL_ID);
             
+            // === 1902 LIMIT ===
             const MAX = 1902;
             
             if (tChannel) {
@@ -631,11 +584,13 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.channel.delete();
         }
 
+        // --- FIXED THREAD ARCHIVE BUTTON LOGIC ---
         if (interaction.customId === 'archive_thread') {
              const thread = interaction.channel;
              if (!thread || !thread.isThread()) {
                  return interaction.reply({ content: "❌ This is not a thread.", ephemeral: true });
              }
+             // Reply first to prevent timeout, then archive
              await interaction.reply({ content: "🔒 Archiving thread...", ephemeral: true });
              try {
                  await thread.setArchived(true);
@@ -669,58 +624,25 @@ client.on('interactionCreate', async (interaction) => {
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
-    // --- 0. VIRUSTOTAL SCANNER ---
-    if (VIRUSTOTAL_API_KEY) {
-        // FIXED: Better Regex to avoid capturing ending punctuation like "google.com."
-        const urlRegex = /https?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*)/g;
-        const urls = message.content.match(urlRegex);
-        
-        if (urls) {
-            for (const url of urls) {
-                try {
-                    const urlId = Buffer.from(url).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-                    
-                    // Note: Ensure Node 18+ for global 'fetch'
-                    const response = await fetch(`https://www.virustotal.com/api/v3/urls/${urlId}`, {
-                        method: 'GET',
-                        headers: { 'x-apikey': VIRUSTOTAL_API_KEY }
-                    });
-
-                    if (response.ok) {
-                        const data = await response.json();
-                        const stats = data.data.attributes.last_analysis_stats;
-                        if (stats.malicious >= VT_SCAN_THRESHOLD) {
-                            await message.delete().catch(() => {});
-                            const log = client.channels.cache.get(LOG_CHANNEL_ID);
-                            const warningMsg = await message.channel.send(`⚠️ ${message.author}, that link was detected as malicious and removed.`);
-                            setTimeout(() => warningMsg.delete().catch(() => {}), 10000);
-                            if (log) log.send(`<:scaredcloudy:1448751027950977117> **Malicious Link Deleted**\nUser: ${message.author.tag}\nLink: ||${url}||`);
-                            return; 
-                        }
-                    }
-                } catch (err) {
-                    console.error("VT Scan Error:", err);
-                }
-            }
-        }
-    }
-
-    // --- 1. IMAGE ONLY CHANNEL CHECK ---
+    // --- 1. IMAGE ONLY CHANNEL CHECK (FIRST LAYER) ---
     if (message.channel.id === TARGET_CHANNEL_ID) {
         if (message.attachments.size === 0 && message.stickers.size === 0) {
             await message.delete().catch(() => {});
-            return; 
+            return; // Deleted because text-only.
         } else {
+            // Valid Image - CREATE THREAD
             try {
                 await message.react('✨');
                 const thread = await message.startThread({
                     name: `${message.author.username}'s Post`,
-                    autoArchiveDuration: 60,
+                    autoArchiveDuration: 60, // 1 hour
                 });
+                
                 const row = new ActionRowBuilder().addComponents(
                     new ButtonBuilder().setCustomId('archive_thread').setLabel('Archive Thread').setStyle(ButtonStyle.Danger),
                     new ButtonBuilder().setCustomId('edit_title').setLabel('Edit Title').setStyle(ButtonStyle.Secondary)
                 );
+                
                 await thread.send({ content: `Hey ${message.author}! Manage your thread here:`, components: [row] });
             } catch (e) {
                 console.error("Failed to create thread:", e);
@@ -728,7 +650,7 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // --- 2. FILTERS ---
+    // --- 2. FILTERS (SECOND LAYER) ---
     const manualFilter = filterMessageManually(message.content);
     if (manualFilter.isSevere) {
         await message.delete().catch(() => {});
@@ -744,7 +666,7 @@ client.on('messageCreate', async (message) => {
         return;
     }
     
-    // AI CHECK
+    // AI CHECK (Double Check)
     if (AI_ENABLED) {
         const { isToxic } = await checkMessageToxicity(message.content);
         if (isToxic) {
@@ -757,11 +679,13 @@ client.on('messageCreate', async (message) => {
     }
 
     // --- 3. AFK LOGIC ---
+    // User returning
     if (afkStatus.has(message.author.id)) {
         afkStatus.delete(message.author.id);
-        message.reply(`welcome back ${message.author} I have removed your AFK <:happymissdiamond:1448752668259647619>`).then(m => setTimeout(() => m.delete().catch(()=>{}), 5000));
+        message.reply(`welcome back ${message.author} I have removed your AFK <:happymissdiamond:1448752668259647619>`).then(m => setTimeout(() => m.delete(), 5000));
     }
     
+    // User being pinged
     if (message.mentions.users.size > 0) {
         message.mentions.users.forEach(u => {
             if (afkStatus.has(u.id)) {
@@ -770,6 +694,7 @@ client.on('messageCreate', async (message) => {
         });
     }
     
+    // Set AFK
     if (message.content.toLowerCase().startsWith('?afk')) {
         const reason = message.content.slice(4).trim() || 'AFK';
         afkStatus.set(message.author.id, { reason, timestamp: Date.now() });
@@ -802,18 +727,9 @@ client.on('guildMemberAdd', async (member) => {
     }
 });
 
-// ================= ERROR HANDLING =================
-process.on('uncaughtException', (err) => {
-    console.error('❌ Uncaught Exception:', err);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('❌ Unhandled Rejection:', reason);
-});
-
 client.login(process.env.TOKEN);
 
-// === PORT ===
+// === 1902 PORT ===
 const PORT = process.env.PORT || 1902;
 http.createServer((req, res) => {
     res.writeHead(200);
