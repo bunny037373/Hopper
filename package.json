@@ -7,10 +7,10 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "discord.js": "^14.14.1",
-    "@google/genai": "latest",
-    "@discordjs/voice": "^0.17.0",
-    "libsodium-wrappers": "^0.7.13",
+    "discord.js": "^14.16.3",
+    "@google/generative-ai": "^0.21.0",
+    "@discordjs/voice": "^0.18.0",
+    "libsodium-wrappers": "^0.7.15",
     "ffmpeg-static": "^5.2.0"
   },
   "engines": {
