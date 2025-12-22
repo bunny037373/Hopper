@@ -16,8 +16,8 @@ const {
 const http = require('http');
 const fs = require('fs');
 
-// --- AI Import ---
-const { GoogleGenAI, HarmCategory, HarmBlockThreshold } = require('@google/genai');
+// --- AI Import (STABLE LIBRARY) ---
+const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require('@google/generative-ai');
 
 // Check for the mandatory token environment variable
 if (!process.env.TOKEN) {
@@ -26,16 +26,19 @@ if (!process.env.TOKEN) {
 }
 
 // --- AI Key Check ---
-let ai;
+let aiModelInstance;
 let AI_ENABLED = !!process.env.GEMINI_API_KEY;
 
 if (!AI_ENABLED) {
     console.error("❌ GEMINI_API_KEY not found. AI commands (/ask) and AI moderation are DISABLED.");
 } else {
     try {
-        ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+        // FIXED: Use the standard constructor
+        const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+        // FIXED: Use an existing model (1.5 Flash)
+        aiModelInstance = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     } catch (e) {
-        console.error("❌ Failed to initialize GoogleGenAI.", e);
+        console.error("❌ Failed to initialize GoogleGenerativeAI.", e);
         AI_ENABLED = false;
     }
 }
@@ -84,7 +87,8 @@ const LEVEL_ROLES = {
     100: '1441563487565250692',
 };
 
-const NICKNAME_SCAN_INTERVAL = 5 * 1000;
+// FIXED: Increased to 10 minutes to prevent API bans
+const NICKNAME_SCAN_INTERVAL = 600 * 1000;
 const HELP_MESSAGE = `hello! Do you need help?
 Please go to https://discord.com/channels/${GUILD_ID}/1414304297122009099
 and for more assistance please use
@@ -182,28 +186,27 @@ function filterMessageManually(text) {
 }
 
 // ================= AI CONFIG =================
-// UPDATED: Changed to BLOCK_MEDIUM_AND_ABOVE to fix the "There's a lot of things we can talk about" error
 const safetySettings = [
     { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
     { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
 ];
-const aiModel = 'gemini-2.5-flash';
 
 async function checkMessageToxicity(text) {
     if (!AI_ENABLED) return { isToxic: false, blockCategory: 'AI_DISABLED' };
     if (!text || text.length === 0) return { isToxic: false, blockCategory: 'None' };
     try {
-        const response = await ai.models.generateContent({
-            model: aiModel,
-            contents: [{ role: "user", parts: [{ text: `Analyze the following user message for hate speech, slurs, harassment: "${text}"` }] }],
+        const response = await aiModelInstance.generateContent({
+            contents: [{ role: "user", parts: [{ text: `Analyze for hate speech/harassment (Yes/No): "${text}"` }] }],
             safetySettings: safetySettings,
         });
-        if (response.candidates && response.candidates.length > 0) {
-            const candidate = response.candidates[0];
-            if (candidate.finishReason === 'SAFETY') return { isToxic: true, blockCategory: 'Safety Block' };
+        
+        if (response.response && response.response.candidates && response.response.candidates.length > 0) {
+           const candidate = response.response.candidates[0];
+           if (candidate.finishReason === 'SAFETY') return { isToxic: true, blockCategory: 'Safety Block' };
         }
         return { isToxic: false, blockCategory: 'None' };
     } catch (error) {
+        if (error.toString().includes("SAFETY")) return { isToxic: true, blockCategory: 'Safety Block' };
         console.error('Gemini Moderation API Error:', error);
         return { isToxic: false, blockCategory: 'API_Error' };
     }
@@ -233,7 +236,7 @@ function startAutomatedNicknameScan(guild) {
     const runScan = async () => {
         if (!guild) return;
         try {
-            const members = await guild.members.fetch();
+            const members = guild.members.cache; // Use cache to avoid rate limits
             for (const [id, member] of members) {
                 if (member.user.bot) continue;
                 await moderateNickname(member);
@@ -335,23 +338,24 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.deferReply();
             if (!AI_ENABLED) return interaction.editReply('<:scaredcloudy:1448751027950977117> AI is disabled (Missing Key).');
             const prompt = interaction.options.getString('prompt');
+            
             const manualFilter = filterMessageManually(prompt);
             if (manualFilter.isSevere || manualFilter.isMild) return interaction.editReply('<:scaredcloudy:1448751027950977117> Filtered.');
+            
             const { isToxic } = await checkMessageToxicity(prompt);
             if (isToxic) return interaction.editReply('<:scaredcloudy:1448751027950977117> Filtered by AI.');
+            
             try {
-                const systemInstruction = `You are Hops Bunny, an assistant for 'Stormy and Hops'. Use Google Search. Only use sources: stormy-and-hops.fandom.com, stormyandhops.netlify.app, X.com/stormyandhops, YouTube.com/stormyandhops. 
-                
-                Use these emojis depending on what they are searching for for Stormy and hops:
+                const systemInstruction = `You are Hops Bunny, an assistant for 'Stormy and Hops'. Use these emojis:
                 <:MrLuck:1448751843885842623> <:cheeringstormy:1448751467400790206> <:concerdnedjin:1448751740030816481> <:happymissdiamond:1448752668259647619> <:madscarlet:1448751667863355482> <:heartkatie:1448751305756639372> <:mischevousoscar:1448752833951305789> <:questioninghops:1448751559067308053> <:ragingpaul:1448752763164037295> <:thinking_preston:1448751103822004437> <:scaredcloudy:1448751027950977117> <:tiredscout:1448751394881278043> <:Stormyandhopslogo:1448502746113118291> <:1_plus_1_equals_2:1372781129861435413> <:Evil_paul:1428932282818760785>`;
                 
-                const result = await ai.models.generateContent({
-                    model: aiModel,
-                    contents: [{ role: "user", parts: [{ text: prompt }] }],
-                    safetySettings: safetySettings,
-                    config: { systemInstruction, tools: [{ googleSearch: {} }] }
+                const result = await aiModelInstance.generateContent({
+                    contents: [{ role: "user", parts: [{ text: `System Instruction: ${systemInstruction}\nUser Question: ${prompt}` }] }],
+                    safetySettings: safetySettings
                 });
-                await interaction.editReply(`🐰 **Hopper response:**\n\n${result.text.slice(0, 1900)}`);
+                
+                const responseText = result.response.text();
+                await interaction.editReply(`🐰 **Hopper response:**\n\n${responseText.slice(0, 1900)}`);
             } catch (error) {
                 console.error(error);
                 const futureTime = new Date(Date.now() + 5 * 60000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -379,7 +383,6 @@ client.on('interactionCreate', async (interaction) => {
             const user = interaction.options.getUser('user');
             const role = interaction.options.getRole('role');
             const member = interaction.guild.members.cache.get(user.id);
-            
             if (!member) return interaction.reply({ content: "❌ User not found.", ephemeral: true });
             
             try {
@@ -417,7 +420,7 @@ client.on('interactionCreate', async (interaction) => {
                 const embed = new EmbedBuilder()
                     .setTitle('🏆 Toon Springs Leaderboard')
                     .setDescription(lbString || "No members found.")
-                    .setColor(0x00FF00); // Green
+                    .setColor(0x00FF00); 
 
                 await interaction.editReply({ embeds: [embed] });
             } catch (e) {
@@ -430,23 +433,22 @@ client.on('interactionCreate', async (interaction) => {
         if (interaction.commandName === 'rank') {
             await interaction.deferReply();
             const user = interaction.options.getUser('user') || interaction.user;
-            const member = interaction.guild.members.cache.get(user.id);
-            if (!member) return interaction.editReply("User not found.");
-
             const userData = userLevels[user.id] || { xp: 0, level: 0 };
             const { level, xpForNext, xpNeeded } = calculateLevel(userData.xp);
+            
             const sorted = Object.entries(userLevels).sort(([, a], [, b]) => b.xp - a.xp);
-            const rank = sorted.findIndex(([id]) => id === user.id) + 1;
+            let rank = sorted.findIndex(([id]) => id === user.id) + 1;
+            if (rank === 0) rank = "Unranked";
 
             const embed = new EmbedBuilder()
                 .setTitle(`🐰 Rank Card: ${user.username}`)
                 .setThumbnail(user.displayAvatarURL())
                 .addFields(
-                    { name: 'Rank', value: `#${rank || 'N/A'}`, inline: true },
+                    { name: 'Rank', value: `#${rank}`, inline: true },
                     { name: 'Level', value: `${level}`, inline: true },
                     { name: 'XP Progress', value: `${xpNeeded} / ${xpForNext}`, inline: true }
                 )
-                .setColor(0x9B59B6); // Purple
+                .setColor(0x9B59B6);
 
             await interaction.editReply({ embeds: [embed] });
             return;
@@ -568,7 +570,6 @@ client.on('interactionCreate', async (interaction) => {
             const transcript = msgs.reverse().map(m => `${m.author.tag}: ${m.content}`).join('\n');
             const tChannel = client.channels.cache.get(TRANSCRIPT_CHANNEL_ID);
             
-            // === 1902 LIMIT ===
             const MAX = 1902;
             
             if (tChannel) {
@@ -584,13 +585,11 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.channel.delete();
         }
 
-        // --- FIXED THREAD ARCHIVE BUTTON LOGIC ---
         if (interaction.customId === 'archive_thread') {
              const thread = interaction.channel;
              if (!thread || !thread.isThread()) {
                  return interaction.reply({ content: "❌ This is not a thread.", ephemeral: true });
              }
-             // Reply first to prevent timeout, then archive
              await interaction.reply({ content: "🔒 Archiving thread...", ephemeral: true });
              try {
                  await thread.setArchived(true);
@@ -624,25 +623,22 @@ client.on('interactionCreate', async (interaction) => {
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
-    // --- 1. IMAGE ONLY CHANNEL CHECK (FIRST LAYER) ---
+    // --- 1. IMAGE ONLY CHANNEL CHECK ---
     if (message.channel.id === TARGET_CHANNEL_ID) {
         if (message.attachments.size === 0 && message.stickers.size === 0) {
             await message.delete().catch(() => {});
-            return; // Deleted because text-only.
+            return; 
         } else {
-            // Valid Image - CREATE THREAD
             try {
                 await message.react('✨');
                 const thread = await message.startThread({
                     name: `${message.author.username}'s Post`,
-                    autoArchiveDuration: 60, // 1 hour
+                    autoArchiveDuration: 60,
                 });
-                
                 const row = new ActionRowBuilder().addComponents(
                     new ButtonBuilder().setCustomId('archive_thread').setLabel('Archive Thread').setStyle(ButtonStyle.Danger),
                     new ButtonBuilder().setCustomId('edit_title').setLabel('Edit Title').setStyle(ButtonStyle.Secondary)
                 );
-                
                 await thread.send({ content: `Hey ${message.author}! Manage your thread here:`, components: [row] });
             } catch (e) {
                 console.error("Failed to create thread:", e);
@@ -650,7 +646,7 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // --- 2. FILTERS (SECOND LAYER) ---
+    // --- 2. FILTERS ---
     const manualFilter = filterMessageManually(message.content);
     if (manualFilter.isSevere) {
         await message.delete().catch(() => {});
@@ -666,7 +662,7 @@ client.on('messageCreate', async (message) => {
         return;
     }
     
-    // AI CHECK (Double Check)
+    // AI CHECK
     if (AI_ENABLED) {
         const { isToxic } = await checkMessageToxicity(message.content);
         if (isToxic) {
@@ -679,13 +675,11 @@ client.on('messageCreate', async (message) => {
     }
 
     // --- 3. AFK LOGIC ---
-    // User returning
     if (afkStatus.has(message.author.id)) {
         afkStatus.delete(message.author.id);
-        message.reply(`welcome back ${message.author} I have removed your AFK <:happymissdiamond:1448752668259647619>`).then(m => setTimeout(() => m.delete(), 5000));
+        message.reply(`welcome back ${message.author} I have removed your AFK <:happymissdiamond:1448752668259647619>`).then(m => setTimeout(() => m.delete().catch(()=>{}), 5000));
     }
     
-    // User being pinged
     if (message.mentions.users.size > 0) {
         message.mentions.users.forEach(u => {
             if (afkStatus.has(u.id)) {
@@ -694,7 +688,6 @@ client.on('messageCreate', async (message) => {
         });
     }
     
-    // Set AFK
     if (message.content.toLowerCase().startsWith('?afk')) {
         const reason = message.content.slice(4).trim() || 'AFK';
         afkStatus.set(message.author.id, { reason, timestamp: Date.now() });
@@ -727,9 +720,18 @@ client.on('guildMemberAdd', async (member) => {
     }
 });
 
+// ================= ERROR HANDLING =================
+process.on('uncaughtException', (err) => {
+    console.error('❌ Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ Unhandled Rejection:', reason);
+});
+
 client.login(process.env.TOKEN);
 
-// === 1902 PORT ===
+// === PORT ===
 const PORT = process.env.PORT || 1902;
 http.createServer((req, res) => {
     res.writeHead(200);
