@@ -272,6 +272,8 @@ client.once('ready', async () => {
         new SlashCommandBuilder().setName('ban').setDescription('Ban member').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true)),
         new SlashCommandBuilder().setName('unban').setDescription('Unban member').addStringOption(opt => opt.setName('userid').setDescription('User ID').setRequired(true)),
         new SlashCommandBuilder().setName('timeout').setDescription('Timeout member').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true)).addIntegerOption(opt => opt.setName('minutes').setDescription('Minutes').setRequired(true)),
+        new SlashCommandBuilder().setName('joinvc').setDescription('Make Hopper join your current voice channel'),
+        new SlashCommandBuilder().setName('leavevc').setDescription('Make Hopper leave the current voice channel'),
         new SlashCommandBuilder().setName('setup').setDescription('Post ticket panel'),
     ].map(c => c.toJSON());
 
@@ -354,6 +356,49 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         if (interaction.commandName === 'help') return interaction.reply({ content: HELP_MESSAGE, ephemeral: true });
+
+        if (interaction.commandName === 'joinvc') {
+            if (!interaction.guild) return interaction.reply({ content: '❌ This command can only be used in a server.', ephemeral: true });
+
+            try {
+                const invokingMember = await interaction.guild.members.fetch(interaction.user.id);
+                const memberVoiceChannel = invokingMember.voice.channel;
+                if (!memberVoiceChannel) return interaction.reply({ content: '❌ Join a voice channel first, then run `/joinvc`.', ephemeral: true });
+
+                await client.rest.patch(Routes.guildVoiceState(interaction.guild.id, '@me'), {
+                    body: {
+                        channel_id: memberVoiceChannel.id,
+                        suppress: false,
+                    },
+                });
+
+                return interaction.reply({ content: `<:cheeringstormy:1448751467400790206> Joined **${memberVoiceChannel.name}**!` });
+            } catch (error) {
+                console.error('Failed to join voice channel:', error);
+                return interaction.reply({ content: '❌ I could not join that voice channel. Check my VC permissions.', ephemeral: true });
+            }
+        }
+
+        if (interaction.commandName === 'leavevc') {
+            if (!interaction.guild) return interaction.reply({ content: '❌ This command can only be used in a server.', ephemeral: true });
+
+            try {
+                const botVoiceState = interaction.guild.voiceStates.cache.get(client.user.id);
+                if (!botVoiceState || !botVoiceState.channelId) return interaction.reply({ content: '❌ I am not connected to a voice channel.', ephemeral: true });
+
+                await client.rest.patch(Routes.guildVoiceState(interaction.guild.id, '@me'), {
+                    body: {
+                        channel_id: null,
+                    },
+                });
+
+                return interaction.reply({ content: '<:cheeringstormy:1448751467400790206> Left the voice channel.' });
+            } catch (error) {
+                console.error('Failed to leave voice channel:', error);
+                return interaction.reply({ content: '❌ I could not leave the voice channel.', ephemeral: true });
+            }
+        }
+
         if (interaction.commandName === 'serverinfo') return interaction.reply({ content: `**Server:** ${interaction.guild.name}\n**Members:** ${interaction.guild.memberCount}`, ephemeral: true });
         if (interaction.commandName === 'userinfo') {
             const user = interaction.options.getUser('user') || interaction.user;
