@@ -48,7 +48,8 @@ const client = new Client({
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.GuildMessageReactions
+        GatewayIntentBits.GuildMessageReactions,
+        GatewayIntentBits.GuildVoiceStates
     ]
 });
 
@@ -368,7 +369,6 @@ client.on('interactionCreate', async (interaction) => {
                 await client.rest.patch(Routes.guildVoiceState(interaction.guild.id, '@me'), {
                     body: {
                         channel_id: memberVoiceChannel.id,
-                        suppress: false,
                     },
                 });
 
@@ -383,9 +383,6 @@ client.on('interactionCreate', async (interaction) => {
             if (!interaction.guild) return interaction.reply({ content: '❌ This command can only be used in a server.', ephemeral: true });
 
             try {
-                const botVoiceState = interaction.guild.voiceStates.cache.get(client.user.id);
-                if (!botVoiceState || !botVoiceState.channelId) return interaction.reply({ content: '❌ I am not connected to a voice channel.', ephemeral: true });
-
                 await client.rest.patch(Routes.guildVoiceState(interaction.guild.id, '@me'), {
                     body: {
                         channel_id: null,
