@@ -15,6 +15,7 @@ const {
 } = require('discord.js');
 const http = require('http');
 const fs = require('fs');
+const path = require('path');
 
 // --- AI Import (STABLE LIBRARY) ---
 const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require('@google/generative-ai');
@@ -55,6 +56,8 @@ const client = new Client({
 
 // ====================== CONFIGURATION ======================
 const STORMY_IMAGE_FILE = './stormy.png';
+const HOPS_IMAGE_FILE = './hops.png';
+const LEVELS_DATA_FILE = './data/user-levels.json';
 const GUILD_ID = '1369477266958192720';
 const TARGET_CHANNEL_ID = '1415134887232540764'; // Image-only channel
 const LOG_CHANNEL_ID = '1414286807360602112'; // Moderation Logs
@@ -92,6 +95,38 @@ const xpCooldown = new Map();
 const dailyCooldown = new Map();
 const joinTracker = new Map();
 const afkStatus = new Map();
+
+function loadLevelData() {
+    try {
+        if (!fs.existsSync(LEVELS_DATA_FILE)) return;
+        const raw = fs.readFileSync(LEVELS_DATA_FILE, 'utf8');
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return;
+
+        Object.keys(parsed).forEach((userId) => {
+            const entry = parsed[userId];
+            if (!entry || typeof entry.xp !== 'number' || typeof entry.level !== 'number') return;
+            userLevels[userId] = { xp: Math.max(0, entry.xp), level: Math.max(0, entry.level) };
+        });
+
+        console.log(`✅ Loaded ${Object.keys(userLevels).length} level records.`);
+    } catch (error) {
+        console.error('❌ Failed to load level data:', error);
+    }
+}
+
+function saveLevelData() {
+    try {
+        const dir = path.dirname(LEVELS_DATA_FILE);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(LEVELS_DATA_FILE, JSON.stringify(userLevels, null, 2), 'utf8');
+    } catch (error) {
+        console.error('❌ Failed to save level data:', error);
+    }
+}
+
+loadLevelData();
 
 // ====================== HELPER FUNCTIONS ======================
 function calculateLevel(totalXp) {
@@ -141,6 +176,7 @@ async function addXP(member, xpAmount, message = null) {
     userLevels[userId].xp += xpAmount;
     const { level } = calculateLevel(userLevels[userId].xp);
     userLevels[userId].level = level;
+    saveLevelData();
     if (level > oldLevel) {
         if (message && message.channel) {
             message.channel.send(`${member.toString()} wow toon! You are now level **${level}**!`);
@@ -313,15 +349,28 @@ client.on('interactionCreate', async (interaction) => {
                 const { isToxic } = await checkMessageToxicity(msg);
                 if (isToxic) return interaction.reply({ content: "<:scaredcloudy:1448751027950977117> Message blocked by filter.", ephemeral: true });
             }
-            let payload = { content: '', files: [] };
-            if (char === 'stormy') {
-                payload.content = `**Stormy Bunny:** ${msg}`;
-                if (fs.existsSync(STORMY_IMAGE_FILE)) {
-                    payload.files = [new AttachmentBuilder(STORMY_IMAGE_FILE, { name: 'stormy.png' })];
-                }
-            } else {
-                payload.content = `**Hops (Bot):** ${msg}`;
+            const characterMeta = char === 'stormy'
+                ? { name: 'Stormy', imagePath: STORMY_IMAGE_FILE, attachmentName: 'stormy.png', color: 0xF5A623 }
+                : { name: 'Hops', imagePath: HOPS_IMAGE_FILE, attachmentName: 'hops.png', color: 0x8E44AD };
+
+            const files = [];
+            let imageUrl = null;
+            if (fs.existsSync(characterMeta.imagePath)) {
+                files.push(new AttachmentBuilder(characterMeta.imagePath, { name: characterMeta.attachmentName }));
+                imageUrl = `attachment://${characterMeta.attachmentName}`;
             }
+
+            const rpEmbed = new EmbedBuilder()
+                .setAuthor({ name: characterMeta.name })
+                .setDescription(msg)
+                .setColor(characterMeta.color)
+                .setFooter({ text: `${characterMeta.name} says:` });
+
+            if (imageUrl) {
+                rpEmbed.setThumbnail(imageUrl);
+            }
+
+            const payload = { embeds: [rpEmbed], files };
             await interaction.channel.send(payload);
             return interaction.reply({ content: `<:cheeringstormy:1448751467400790206> Sent as ${char}`, ephemeral: true });
         }
@@ -501,6 +550,7 @@ client.on('interactionCreate', async (interaction) => {
                 userLevels[userId].xp = Math.max(0, userLevels[userId].xp - amt);
                 const { level } = calculateLevel(userLevels[userId].xp);
                 userLevels[userId].level = level;
+                saveLevelData();
             }
             const log = client.channels.cache.get(LOG_CHANNEL_ID);
             if(log) log.send(`<:concerdnedjin:1448751740030816481> **XP Removed**\nTarget: ${user.tag}\nAmount: ${amt}\nMod: ${interaction.user.tag}`);
@@ -513,6 +563,7 @@ client.on('interactionCreate', async (interaction) => {
             let totalXP = 0;
             for (let l = 0; l < level; l++) totalXP += 5 * l * l + 50 * l + 100;
             userLevels[userId] = { xp: totalXP, level: level };
+            saveLevelData();
             await handleLevelRoles(interaction.guild.members.cache.get(userId), level);
             const log = client.channels.cache.get(LOG_CHANNEL_ID);
             if(log) log.send(`<:cheeringstormy:1448751467400790206> **Level Changed**\nTarget: ${user.tag}\nLevel: ${level}\nMod: ${interaction.user.tag}`);
@@ -741,10 +792,22 @@ client.on('messageCreate', async (message) => {
 // ================= ERROR HANDLING =================
 process.on('uncaughtException', (err) => {
     console.error('❌ Uncaught Exception:', err);
+    saveLevelData();
 });
 
 process.on('unhandledRejection', (reason, promise) => {
     console.error('❌ Unhandled Rejection:', reason);
+    saveLevelData();
+});
+
+process.on('SIGINT', () => {
+    saveLevelData();
+    process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+    saveLevelData();
+    process.exit(0);
 });
 
 client.login(process.env.TOKEN);
