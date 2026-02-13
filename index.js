@@ -641,13 +641,13 @@ client.on('messageCreate', async (message) => {
         await message.delete().catch(() => {});
         if (message.member.manageable) message.member.timeout(60 * 60 * 1000, "Severe Filter").catch(() => {});
         const log = client.channels.cache.get(LOG_CHANNEL_ID);
-        if (log) log.send(`<:ragingpaul:1448752763164037295> Severe Violation: ${message.author.tag}`);
+        if (log) log.send(`<:ragingpaul:1448752763164037295> Severe Violation: ${message.author.tag}\nDetected Word: ||${manualFilter.matchedWord || 'Unknown'}||`);
         return;
     }
     if (manualFilter.isMild) {
         await message.delete().catch(() => {});
         const log = client.channels.cache.get(LOG_CHANNEL_ID);
-        if (log) log.send(`<:madscarlet:1448751667863355482> Mild Violation (Deleted): ${message.author.tag}`);
+        if (log) log.send(`<:madscarlet:1448751667863355482> Mild Violation (Deleted): ${message.author.tag}\nDetected Word: ||${manualFilter.matchedWord || 'Unknown'}||`);
         return;
     }
     
