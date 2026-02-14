@@ -60,23 +60,6 @@ const LOG_CHANNEL_ID = '1414286807360602112'; // Moderation Logs
 const TRANSCRIPT_CHANNEL_ID = '1414354204079689849';
 const SETUP_POST_CHANNEL = '1445628128423579660';
 const RP_CATEGORY_ID = '1446530920650899536';
-const AFK_XP_EXCLUSION_CHANNEL_ID = '1414352027034583080';
-const BOOSTER_ROLE_ID = '1400596498969923685';
-
-// --- LEVELING/XP CONFIGURATION ---
-const XP_COOLDOWN_MS = 60 * 1000;
-const DAILY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
-const XP_GAIN = 15;
-
-const LEVEL_ROLES = {
-    5: '1418567907662630964',
-    10: '1418568030132244611',
-    15: '1418568206662238269',
-    20: '1418568333229559978',
-    30: '1418568692819824741',
-    50: '1418568903411372063',
-    100: '1441563487565250692',
-};
 
 // Scan every 10 minutes to avoid bans
 const NICKNAME_SCAN_INTERVAL = 600 * 1000; 
@@ -86,68 +69,10 @@ and for more assistance please use
 https://discord.com/channels/${GUILD_ID}/1414352972304879626`;
 
 // ====================== DATA STORAGE ======================
-const userLevels = {};
-const xpCooldown = new Map();
-const dailyCooldown = new Map();
 const joinTracker = new Map();
 const afkStatus = new Map();
 
 // ====================== HELPER FUNCTIONS ======================
-function calculateLevel(totalXp) {
-    let level = 0;
-    let xpRemaining = totalXp;
-    let xpNeeded = 100;
-    while (xpRemaining >= xpNeeded) {
-        xpRemaining -= xpNeeded;
-        level++;
-        xpNeeded = 5 * level * level + 50 * level + 100;
-    }
-    return { level, xpForNext: xpNeeded, xpNeeded: xpRemaining };
-}
-
-async function handleLevelRoles(member, newLevel) {
-    if (!member || !member.guild) return;
-    const guild = member.guild;
-    const levelKeys = Object.keys(LEVEL_ROLES).map(Number).sort((a, b) => b - a);
-    try {
-        let roleToAddId = null;
-        for (const levelThreshold of levelKeys) {
-            if (newLevel >= levelThreshold) {
-                roleToAddId = LEVEL_ROLES[levelThreshold];
-                break;
-            }
-        }
-        for (const levelThreshold of levelKeys) {
-            const roleId = LEVEL_ROLES[levelThreshold];
-            const role = guild.roles.cache.get(roleId);
-            if (!role) continue;
-            if (roleId === roleToAddId) {
-                if (!member.roles.cache.has(roleId)) await member.roles.add(role);
-            } else {
-                if (member.roles.cache.has(roleId) && newLevel > levelThreshold) await member.roles.remove(role);
-            }
-        }
-    } catch (e) {
-        console.error('Failed to handle level up roles:', e);
-    }
-}
-
-async function addXP(member, xpAmount, message = null) {
-    if (!member) return;
-    const userId = member.id;
-    if (!userLevels[userId]) userLevels[userId] = { xp: 0, level: 0 };
-    const oldLevel = userLevels[userId].level;
-    userLevels[userId].xp += xpAmount;
-    const { level } = calculateLevel(userLevels[userId].xp);
-    userLevels[userId].level = level;
-    if (level > oldLevel) {
-        if (message && message.channel) {
-            message.channel.send(`${member.toString()} wow toon! You are now level **${level}**!`);
-        }
-        await handleLevelRoles(member, level);
-    }
-}
-
 // ====================== FILTER LOGIC ======================
 const ALLOWED_WORDS = ["assist", "assistance", "assistant", "associat", "class", "classic", "glass", "grass", "pass", "bass", "compass", "hello", "shell", "peacock", "cocktail", "babcock"];
 const MILD_BAD_WORDS = ["fuck", "f*ck", "f**k", "f-ck", "fck", "fu-", "f-", "f*cking", "fucking", "shit", "s*it", "s**t", "sh!t", "ass", "bitch", "hoe", "whore", "slut", "cunt", "dick", "pussy", "cock", "bastard", "sexy"];
@@ -262,12 +187,6 @@ client.once('ready', async () => {
         new SlashCommandBuilder().setName('clear').setDescription('Clear messages').addIntegerOption(opt => opt.setName('number').setDescription('Number').setRequired(true)),
         new SlashCommandBuilder().setName('addrole').setDescription('Add a role to a user').addUserOption(opt => opt.setName('user').setDescription('The user').setRequired(true)).addRoleOption(opt => opt.setName('role').setDescription('The role').setRequired(true)),
         new SlashCommandBuilder().setName('userinfo').setDescription('User info').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(false)),
-        new SlashCommandBuilder().setName('daily').setDescription('Claim daily XP'),
-        new SlashCommandBuilder().setName('leaderboard').setDescription('Show top members'),
-        new SlashCommandBuilder().setName('rank').setDescription('Show rank card').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(false)),
-        new SlashCommandBuilder().setName('givexp').setDescription('Give XP').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true)).addIntegerOption(opt => opt.setName('xp').setDescription('XP').setRequired(true)),
-        new SlashCommandBuilder().setName('takeawayxp').setDescription('Take XP').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true)).addIntegerOption(opt => opt.setName('xp').setDescription('XP').setRequired(true)),
-        new SlashCommandBuilder().setName('changelevel').setDescription('Set level').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true)).addIntegerOption(opt => opt.setName('level').setDescription('Level').setRequired(true)),
         new SlashCommandBuilder().setName('kick').setDescription('Kick member').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true)),
         new SlashCommandBuilder().setName('ban').setDescription('Ban member').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true)),
         new SlashCommandBuilder().setName('unban').setDescription('Unban member').addStringOption(opt => opt.setName('userid').setDescription('User ID').setRequired(true)),
@@ -290,7 +209,7 @@ client.on('interactionCreate', async (interaction) => {
     // --- SLASH COMMANDS ---
     if (interaction.isChatInputCommand()) {
         const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ModerateMembers);
-        const modCommands = ['kick', 'ban', 'unban', 'timeout', 'setup', 'givexp', 'takeawayxp', 'changelevel', 'clear', 'addrole'];
+        const modCommands = ['kick', 'ban', 'unban', 'timeout', 'setup', 'clear', 'addrole'];
         if (modCommands.includes(interaction.commandName) && !isMod) return interaction.reply({ content: '❌ Mods only', ephemeral: true });
 
         if (interaction.commandName === 'say') {
@@ -384,98 +303,6 @@ client.on('interactionCreate', async (interaction) => {
             }
         }
 
-        if (interaction.commandName === 'daily') {
-            const userId = interaction.user.id;
-            const now = Date.now();
-            if (dailyCooldown.has(userId) && now < dailyCooldown.get(userId)) return interaction.reply({ content: "❌ Cooldown.", ephemeral: true });
-            await addXP(interaction.member, 500);
-            dailyCooldown.set(userId, now + DAILY_COOLDOWN_MS);
-            return interaction.reply("<:happymissdiamond:1448752668259647619> Claimed daily!");
-        }
-
-        if (interaction.commandName === 'leaderboard') {
-            await interaction.deferReply();
-            try {
-                const sortedUsers = Object.entries(userLevels).sort(([, a], [, b]) => b.level - a.level || b.xp - a.xp).slice(0, 10);
-                if (sortedUsers.length === 0) return interaction.editReply("No data yet.");
-
-                let lbString = "";
-                sortedUsers.forEach(([userId, data], index) => {
-                    const member = interaction.guild.members.cache.get(userId);
-                    const name = member ? member.displayName : "Unknown User";
-                    lbString += `**${index + 1}.** ${name} - Lvl ${data.level} (${data.xp} XP)\n`;
-                });
-
-                const embed = new EmbedBuilder()
-                    .setTitle('🏆 Toon Springs Leaderboard')
-                    .setDescription(lbString || "No members found.")
-                    .setColor(0x00FF00); 
-
-                await interaction.editReply({ embeds: [embed] });
-            } catch (e) {
-                console.error(e);
-                await interaction.editReply("Failed to generate leaderboard.");
-            }
-            return;
-        }
-
-        if (interaction.commandName === 'rank') {
-            await interaction.deferReply();
-            const user = interaction.options.getUser('user') || interaction.user;
-            const userData = userLevels[user.id] || { xp: 0, level: 0 };
-            const { level, xpForNext, xpNeeded } = calculateLevel(userData.xp);
-            
-            const sorted = Object.entries(userLevels).sort(([, a], [, b]) => b.xp - a.xp);
-            let rank = sorted.findIndex(([id]) => id === user.id) + 1;
-            if (rank === 0) rank = "Unranked";
-
-            const embed = new EmbedBuilder()
-                .setTitle(`🐰 Rank Card: ${user.username}`)
-                .setThumbnail(user.displayAvatarURL())
-                .addFields(
-                    { name: 'Rank', value: `#${rank}`, inline: true },
-                    { name: 'Level', value: `${level}`, inline: true },
-                    { name: 'XP Progress', value: `${xpNeeded} / ${xpForNext}`, inline: true }
-                )
-                .setColor(0x9B59B6);
-
-            await interaction.editReply({ embeds: [embed] });
-            return;
-        }
-
-        if (interaction.commandName === 'givexp') {
-            const user = interaction.options.getUser('user');
-            const amt = interaction.options.getInteger('xp');
-            await addXP(interaction.guild.members.cache.get(user.id), amt);
-            const log = client.channels.cache.get(LOG_CHANNEL_ID);
-            if(log) log.send(`<:cheeringstormy:1448751467400790206> **XP Given**\nTarget: ${user.tag}\nAmount: ${amt}\nMod: ${interaction.user.tag}`);
-            return interaction.reply(`✅ Gave ${amt} XP to ${user.tag}`);
-        }
-        if (interaction.commandName === 'takeawayxp') {
-            const user = interaction.options.getUser('user');
-            const amt = interaction.options.getInteger('xp');
-            const userId = user.id;
-            if (userLevels[userId]) {
-                userLevels[userId].xp = Math.max(0, userLevels[userId].xp - amt);
-                const { level } = calculateLevel(userLevels[userId].xp);
-                userLevels[userId].level = level;
-            }
-            const log = client.channels.cache.get(LOG_CHANNEL_ID);
-            if(log) log.send(`<:concerdnedjin:1448751740030816481> **XP Removed**\nTarget: ${user.tag}\nAmount: ${amt}\nMod: ${interaction.user.tag}`);
-            return interaction.reply(`✅ Took ${amt} XP from ${user.tag}`);
-        }
-        if (interaction.commandName === 'changelevel') {
-            const user = interaction.options.getUser('user');
-            const level = interaction.options.getInteger('level');
-            const userId = user.id;
-            let totalXP = 0;
-            for (let l = 0; l < level; l++) totalXP += 5 * l * l + 50 * l + 100;
-            userLevels[userId] = { xp: totalXP, level: level };
-            await handleLevelRoles(interaction.guild.members.cache.get(userId), level);
-            const log = client.channels.cache.get(LOG_CHANNEL_ID);
-            if(log) log.send(`<:cheeringstormy:1448751467400790206> **Level Changed**\nTarget: ${user.tag}\nLevel: ${level}\nMod: ${interaction.user.tag}`);
-            return interaction.reply(`✅ Set ${user.tag} to level ${level}`);
-        }
 
         if (interaction.commandName === 'kick') {
             const user = interaction.options.getUser('user');
@@ -641,13 +468,13 @@ client.on('messageCreate', async (message) => {
         await message.delete().catch(() => {});
         if (message.member.manageable) message.member.timeout(60 * 60 * 1000, "Severe Filter").catch(() => {});
         const log = client.channels.cache.get(LOG_CHANNEL_ID);
-        if (log) log.send(`<:ragingpaul:1448752763164037295> Severe Violation: ${message.author.tag}`);
+        if (log) log.send(`<:ragingpaul:1448752763164037295> Severe Violation: ${message.author.tag}\nDetected Word: ||${manualFilter.matchedWord || 'Unknown'}||`);
         return;
     }
     if (manualFilter.isMild) {
         await message.delete().catch(() => {});
         const log = client.channels.cache.get(LOG_CHANNEL_ID);
-        if (log) log.send(`<:madscarlet:1448751667863355482> Mild Violation (Deleted): ${message.author.tag}`);
+        if (log) log.send(`<:madscarlet:1448751667863355482> Mild Violation (Deleted): ${message.author.tag}\nDetected Word: ||${manualFilter.matchedWord || 'Unknown'}||`);
         return;
     }
     
@@ -681,18 +508,6 @@ client.on('messageCreate', async (message) => {
         const reason = message.content.slice(4).trim() || 'AFK';
         afkStatus.set(message.author.id, { reason, timestamp: Date.now() });
         return message.reply(`afk ${message.author} ${reason} has been set`);
-    }
-
-    // --- 4. XP LOGIC ---
-    if (message.channel.id !== AFK_XP_EXCLUSION_CHANNEL_ID) {
-        const userId = message.author.id;
-        const now = Date.now();
-        if (!xpCooldown.has(userId) || now > xpCooldown.get(userId)) {
-            let gain = XP_GAIN;
-            if (message.member.roles.cache.has(BOOSTER_ROLE_ID)) gain *= 2;
-            await addXP(message.member, gain, message);
-            xpCooldown.set(userId, now + XP_COOLDOWN_MS);
-        }
     }
 });
 
