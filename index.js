@@ -1,8 +1,7 @@
 // Import necessary modules
 const {
-    Client,
-    GatewayIntentBits,
-    ActionRowBuilder,
+    
+   
     ButtonBuilder,
     ButtonStyle,
     REST,
@@ -43,14 +42,7 @@ if (!AI_ENABLED) {
 
 // ====================== CLIENT SETUP ======================
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.GuildMessageReactions
-    ]
-});
+    i
 
 // ====================== CONFIGURATION ======================
 const STORMY_IMAGE_FILE = './stormy.png';
@@ -713,3 +705,4 @@ http.createServer((req, res) => {
     res.writeHead(200);
     res.end('Bot Running');
 }).listen(PORT, () => console.log(`Web server listening on port ${PORT}`));
+
