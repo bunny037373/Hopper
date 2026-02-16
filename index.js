@@ -1,7 +1,8 @@
 // Import necessary modules
 const {
-    
-   
+    Client,
+    GatewayIntentBits,
+    ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
     REST,
@@ -42,7 +43,14 @@ if (!AI_ENABLED) {
 
 // ====================== CLIENT SETUP ======================
 const client = new Client({
-    i
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildMessageReactions
+    ]
+});
 
 // ====================== CONFIGURATION ======================
 const STORMY_IMAGE_FILE = './stormy.png';
