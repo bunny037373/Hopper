@@ -11,8 +11,17 @@ const {
     PermissionsBitField,
     ThreadChannel,
     AttachmentBuilder,
-    EmbedBuilder
+    EmbedBuilder,
+    ChannelType
 } = require('discord.js');
+
+// --- VOICE IMPORTS (NEW) ---
+const { 
+    joinVoiceChannel, 
+    getVoiceConnection, 
+    VoiceConnectionStatus 
+} = require('@discordjs/voice');
+
 const http = require('http');
 const fs = require('fs');
 
@@ -48,7 +57,8 @@ const client = new Client({
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.GuildMessageReactions
+        GatewayIntentBits.GuildMessageReactions,
+        GatewayIntentBits.GuildVoiceStates // REQUIRED for Voice features
     ]
 });
 
@@ -91,6 +101,9 @@ const xpCooldown = new Map();
 const dailyCooldown = new Map();
 const joinTracker = new Map();
 const afkStatus = new Map();
+
+// --- VOICE STORAGE ---
+let persistentVoiceChannelId = null; // Stores the channel ID the bot MUST be in
 
 // ====================== HELPER FUNCTIONS ======================
 function calculateLevel(totalXp) {
@@ -273,6 +286,9 @@ client.once('ready', async () => {
         new SlashCommandBuilder().setName('unban').setDescription('Unban member').addStringOption(opt => opt.setName('userid').setDescription('User ID').setRequired(true)),
         new SlashCommandBuilder().setName('timeout').setDescription('Timeout member').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true)).addIntegerOption(opt => opt.setName('minutes').setDescription('Minutes').setRequired(true)),
         new SlashCommandBuilder().setName('setup').setDescription('Post ticket panel'),
+        // --- NEW VOICE COMMANDS ---
+        new SlashCommandBuilder().setName('joinvc').setDescription('Join a Voice Channel').addChannelOption(opt => opt.setName('channel').setDescription('Voice Channel').addChannelTypes(ChannelType.GuildVoice).setRequired(false)),
+        new SlashCommandBuilder().setName('leavevc').setDescription('Leave the Voice Channel')
     ].map(c => c.toJSON());
 
     const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
@@ -290,9 +306,10 @@ client.on('interactionCreate', async (interaction) => {
     // --- SLASH COMMANDS ---
     if (interaction.isChatInputCommand()) {
         const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ModerateMembers);
-        const modCommands = ['kick', 'ban', 'unban', 'timeout', 'setup', 'givexp', 'takeawayxp', 'changelevel', 'clear', 'addrole'];
+        const modCommands = ['kick', 'ban', 'unban', 'timeout', 'setup', 'givexp', 'takeawayxp', 'changelevel', 'clear', 'addrole', 'joinvc', 'leavevc'];
         if (modCommands.includes(interaction.commandName) && !isMod) return interaction.reply({ content: '❌ Mods only', ephemeral: true });
 
+        // ... existing commands ...
         if (interaction.commandName === 'say') {
             const text = interaction.options.getString('text');
             if (AI_ENABLED) {
@@ -526,6 +543,41 @@ client.on('interactionCreate', async (interaction) => {
             await ch.send({ content: 'Create Ticket:', components: [row] });
             return interaction.reply({ content: '✅ Posted', ephemeral: true });
         }
+
+        // --- JOIN VC COMMAND ---
+        if (interaction.commandName === 'joinvc') {
+            const channel = interaction.options.getChannel('channel') || interaction.member.voice.channel;
+            
+            if (!channel) return interaction.reply({ content: "❌ You need to specify a channel or be in one.", ephemeral: true });
+            
+            try {
+                // Save the channel ID so we can auto-rejoin if kicked
+                persistentVoiceChannelId = channel.id;
+
+                joinVoiceChannel({
+                    channelId: channel.id,
+                    guildId: channel.guild.id,
+                    adapterCreator: channel.guild.voiceAdapterCreator,
+                    selfDeaf: false, // Ensures bot is not deafened
+                    selfMute: false  // Ensures bot is not muted
+                });
+                return interaction.reply(`🔊 Joined **${channel.name}** (I will auto-rejoin if kicked).`);
+            } catch (error) {
+                console.error(error);
+                return interaction.reply({ content: "❌ Failed to join voice channel.", ephemeral: true });
+            }
+        }
+
+        // --- LEAVE VC COMMAND ---
+        if (interaction.commandName === 'leavevc') {
+            const connection = getVoiceConnection(interaction.guild.id);
+            if (!connection) return interaction.reply({ content: "❌ I am not in a voice channel.", ephemeral: true });
+            
+            // Clear persistence so we don't auto-rejoin
+            persistentVoiceChannelId = null;
+            connection.destroy();
+            return interaction.reply("👋 Left voice channel.");
+        }
     }
 
     // --- BUTTONS ---
@@ -696,6 +748,38 @@ client.on('messageCreate', async (message) => {
     }
 });
 
+// ================= VOICE STATE (AUTO-REJOIN) =================
+client.on('voiceStateUpdate', async (oldState, newState) => {
+    // Only care if it involves the bot
+    if (oldState.member.id !== client.user.id) return;
+
+    // Check if the bot was disconnected (oldState has a channel, newState does not)
+    if (oldState.channelId && !newState.channelId) {
+        // If we are supposed to be in a channel (persistentVoiceChannelId is set)
+        if (persistentVoiceChannelId) {
+            console.log(`⚠️ Bot was disconnected. Attempting auto-rejoin to ${persistentVoiceChannelId}...`);
+            
+            // Wait 2 seconds before rejoining to avoid spam limits
+            setTimeout(() => {
+                const guild = client.guilds.cache.get(GUILD_ID);
+                if (guild) {
+                    try {
+                        joinVoiceChannel({
+                            channelId: persistentVoiceChannelId,
+                            guildId: guild.id,
+                            adapterCreator: guild.voiceAdapterCreator,
+                            selfDeaf: false,
+                            selfMute: false
+                        });
+                    } catch (e) {
+                        console.error("Failed to auto-rejoin:", e);
+                    }
+                }
+            }, 2000);
+        }
+    }
+});
+
 // ================= ERROR HANDLING =================
 process.on('uncaughtException', (err) => {
     console.error('❌ Uncaught Exception:', err);
@@ -713,4 +797,3 @@ http.createServer((req, res) => {
     res.writeHead(200);
     res.end('Bot Running');
 }).listen(PORT, () => console.log(`Web server listening on port ${PORT}`));
-
