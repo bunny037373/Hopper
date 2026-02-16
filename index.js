@@ -1,4 +1,3 @@
-// Import necessary modules
 const {
     Client,
     GatewayIntentBits,
@@ -12,7 +11,7 @@ const {
     ThreadChannel,
     AttachmentBuilder,
     EmbedBuilder,
-    ChannelType
+    ChannelType // <--- MAKE SURE THIS IS HERE
 } = require('discord.js');
 
 // --- VOICE IMPORTS (NEW) ---
@@ -797,3 +796,4 @@ http.createServer((req, res) => {
     res.writeHead(200);
     res.end('Bot Running');
 }).listen(PORT, () => console.log(`Web server listening on port ${PORT}`));
+
