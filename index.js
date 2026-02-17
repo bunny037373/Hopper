@@ -1,3 +1,4 @@
+// Import necessary modules
 const {
     Client,
     GatewayIntentBits,
@@ -11,20 +12,23 @@ const {
     ThreadChannel,
     AttachmentBuilder,
     EmbedBuilder,
-    ChannelType // <--- MAKE SURE THIS IS HERE
+    ChannelType 
 } = require('discord.js');
 
-// --- VOICE IMPORTS (NEW) ---
+// --- VOICE IMPORTS ---
 const { 
     joinVoiceChannel, 
     getVoiceConnection, 
+    createAudioPlayer,
+    createAudioResource,
     VoiceConnectionStatus 
 } = require('@discordjs/voice');
+const discordTTS = require('discord-tts'); // NEW: Text-to-Speech
 
 const http = require('http');
 const fs = require('fs');
 
-// --- AI Import (STABLE LIBRARY) ---
+// --- AI Import ---
 const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require('@google/generative-ai');
 
 // Check for the mandatory token environment variable
@@ -57,7 +61,7 @@ const client = new Client({
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildMessageReactions,
-        GatewayIntentBits.GuildVoiceStates // REQUIRED for Voice features
+        GatewayIntentBits.GuildVoiceStates // REQUIRED for Voice
     ]
 });
 
@@ -87,7 +91,6 @@ const LEVEL_ROLES = {
     100: '1441563487565250692',
 };
 
-// Scan every 10 minutes to avoid bans
 const NICKNAME_SCAN_INTERVAL = 600 * 1000; 
 const HELP_MESSAGE = `hello! Do you need help?
 Please go to https://discord.com/channels/${GUILD_ID}/1414304297122009099
@@ -102,9 +105,29 @@ const joinTracker = new Map();
 const afkStatus = new Map();
 
 // --- VOICE STORAGE ---
-let persistentVoiceChannelId = null; // Stores the channel ID the bot MUST be in
+let persistentVoiceChannelId = null; 
 
 // ====================== HELPER FUNCTIONS ======================
+
+// --- NEW: VOICE SPEAK FUNCTION ---
+function speakInVC(guildId, text) {
+    const connection = getVoiceConnection(guildId);
+    if (!connection) return;
+
+    try {
+        // Convert text to audio stream
+        const stream = discordTTS.getVoiceStream(text);
+        const resource = createAudioResource(stream, { inlineVolume: true });
+        resource.volume.setVolume(1);
+
+        const player = createAudioPlayer();
+        player.play(resource);
+        connection.subscribe(player);
+    } catch (e) {
+        console.error("TTS Error:", e);
+    }
+}
+
 function calculateLevel(totalXp) {
     let level = 0;
     let xpRemaining = totalXp;
@@ -287,7 +310,8 @@ client.once('ready', async () => {
         new SlashCommandBuilder().setName('setup').setDescription('Post ticket panel'),
         // --- NEW VOICE COMMANDS ---
         new SlashCommandBuilder().setName('joinvc').setDescription('Join a Voice Channel').addChannelOption(opt => opt.setName('channel').setDescription('Voice Channel').addChannelTypes(ChannelType.GuildVoice).setRequired(false)),
-        new SlashCommandBuilder().setName('leavevc').setDescription('Leave the Voice Channel')
+        new SlashCommandBuilder().setName('leavevc').setDescription('Leave the Voice Channel'),
+        new SlashCommandBuilder().setName('speak').setDescription('Make bot speak in VC').addStringOption(opt => opt.setName('text').setDescription('What to say').setRequired(true))
     ].map(c => c.toJSON());
 
     const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
@@ -305,7 +329,7 @@ client.on('interactionCreate', async (interaction) => {
     // --- SLASH COMMANDS ---
     if (interaction.isChatInputCommand()) {
         const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ModerateMembers);
-        const modCommands = ['kick', 'ban', 'unban', 'timeout', 'setup', 'givexp', 'takeawayxp', 'changelevel', 'clear', 'addrole', 'joinvc', 'leavevc'];
+        const modCommands = ['kick', 'ban', 'unban', 'timeout', 'setup', 'givexp', 'takeawayxp', 'changelevel', 'clear', 'addrole', 'joinvc', 'leavevc', 'speak'];
         if (modCommands.includes(interaction.commandName) && !isMod) return interaction.reply({ content: '❌ Mods only', ephemeral: true });
 
         // ... existing commands ...
@@ -553,14 +577,22 @@ client.on('interactionCreate', async (interaction) => {
                 // Save the channel ID so we can auto-rejoin if kicked
                 persistentVoiceChannelId = channel.id;
 
-                joinVoiceChannel({
+                const connection = joinVoiceChannel({
                     channelId: channel.id,
                     guildId: channel.guild.id,
                     adapterCreator: channel.guild.voiceAdapterCreator,
                     selfDeaf: false, // Ensures bot is not deafened
                     selfMute: false  // Ensures bot is not muted
                 });
-                return interaction.reply(`🔊 Joined **${channel.name}** (I will auto-rejoin if kicked).`);
+
+                // --- SPEAK HELLO ON JOIN ---
+                connection.on(VoiceConnectionStatus.Ready, () => {
+                    setTimeout(() => {
+                        speakInVC(channel.guild.id, "Hello everyone! I am here.");
+                    }, 1000); // 1 second delay
+                });
+
+                return interaction.reply(`🔊 Joined **${channel.name}** and said hello! (I will auto-rejoin if kicked).`);
             } catch (error) {
                 console.error(error);
                 return interaction.reply({ content: "❌ Failed to join voice channel.", ephemeral: true });
@@ -576,6 +608,16 @@ client.on('interactionCreate', async (interaction) => {
             persistentVoiceChannelId = null;
             connection.destroy();
             return interaction.reply("👋 Left voice channel.");
+        }
+
+        // --- SPEAK COMMAND ---
+        if (interaction.commandName === 'speak') {
+            const text = interaction.options.getString('text');
+            const connection = getVoiceConnection(interaction.guild.id);
+            if (!connection) return interaction.reply({ content: "❌ I am not in a voice channel. Use /joinvc first.", ephemeral: true });
+            
+            speakInVC(interaction.guild.id, text);
+            return interaction.reply({ content: `🗣️ Speaking: "${text}"`, ephemeral: true });
         }
     }
 
@@ -763,12 +805,19 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                 const guild = client.guilds.cache.get(GUILD_ID);
                 if (guild) {
                     try {
-                        joinVoiceChannel({
+                        const connection = joinVoiceChannel({
                             channelId: persistentVoiceChannelId,
                             guildId: guild.id,
                             adapterCreator: guild.voiceAdapterCreator,
                             selfDeaf: false,
                             selfMute: false
+                        });
+                        
+                        // Re-greet on auto-rejoin
+                        connection.on(VoiceConnectionStatus.Ready, () => {
+                             setTimeout(() => {
+                                 speakInVC(guild.id, "I am back!");
+                             }, 1000);
                         });
                     } catch (e) {
                         console.error("Failed to auto-rejoin:", e);
@@ -796,4 +845,3 @@ http.createServer((req, res) => {
     res.writeHead(200);
     res.end('Bot Running');
 }).listen(PORT, () => console.log(`Web server listening on port ${PORT}`));
-
