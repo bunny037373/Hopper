@@ -144,7 +144,7 @@ client.once('ready', async () => {
     // Set Presence Logic
     client.user.setPresence({ 
         activities: [{ name: 'quick tap', type: 0 }], 
-        status: 'online' 
+        status: 'Idle' 
     });
 
     const commands = [
@@ -339,3 +339,4 @@ client.login(process.env.TOKEN);
 
 const PORT = process.env.PORT || 1902;
 http.createServer((req, res) => { res.writeHead(200); res.end('Bot Running'); }).listen(PORT);
+
