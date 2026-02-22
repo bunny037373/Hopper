@@ -71,12 +71,12 @@ const TARGET_CHANNEL_ID = '1415134887232540764';
 const LOG_CHANNEL_ID = '1414286807360602112';
 
 // ====================== BLACKLIST ======================
-// The bot will NEVER copy these IDs
 const IGNORED_IDS = ['888238712780128288', '1360737030895833360'];
 
 // ====================== DATA STORAGE ======================
 const afkStatus = new Map();
-let copyEnabled = true; // Global toggle switch
+let copyEnabled = true;    // Global toggle for copying
+let reverseEnabled = false; // Global toggle for reverse mode
 let persistentVoiceChannelId = null;
 
 // ====================== HELPER FUNCTIONS ======================
@@ -130,6 +130,7 @@ client.once('ready', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
     const commands = [
         new SlashCommandBuilder().setName('copytoggle').setDescription('Turn automatic message copying ON or OFF'),
+        new SlashCommandBuilder().setName('reversetoggle').setDescription('Turn reverse mode ON or OFF'),
         new SlashCommandBuilder().setName('say').setDescription('Say something anonymously').addStringOption(opt => opt.setName('text').setDescription('Text').setRequired(true)),
         new SlashCommandBuilder().setName('ask').setDescription('Ask AI').addStringOption(opt => opt.setName('prompt').setDescription('Question').setRequired(true)),
         new SlashCommandBuilder().setName('joinvc').setDescription('Join VC'),
@@ -151,8 +152,13 @@ client.on('interactionCreate', async (interaction) => {
     // --- /copytoggle handler ---
     if (interaction.commandName === 'copytoggle') {
         copyEnabled = !copyEnabled;
-        const status = copyEnabled ? 'ENABLED 🔛' : 'DISABLED 📴';
-        return interaction.reply({ content: `Copying is now **${status}**.` });
+        return interaction.reply({ content: `Copying is now **${copyEnabled ? 'ENABLED 🔛' : 'DISABLED 📴'}**.` });
+    }
+
+    // --- /reversetoggle handler ---
+    if (interaction.commandName === 'reversetoggle') {
+        reverseEnabled = !reverseEnabled;
+        return interaction.reply({ content: `Reverse mode is now **${reverseEnabled ? 'ENABLED 🔄' : 'DISABLED ⏹️'}**.` });
     }
 
     if (interaction.commandName === 'say') {
@@ -160,23 +166,24 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.channel.send(text);
         return interaction.reply({ content: "Sent", ephemeral: true });
     }
-
-    // (Add logic for other commands like /ask, /clear here if needed)
 });
 
 // ================= MESSAGE HANDLER =================
 client.on('messageCreate', async (message) => {
-    // 1. Safety: Ignore all bots and Direct Messages
     if (message.author.bot || !message.guild) return;
 
-    // 2. AUTOMATIC GLOBAL COPY LOGIC
+    // --- AUTOMATIC GLOBAL COPY LOGIC ---
     if (copyEnabled) {
-        // Only copy if: 
-        // - User is not in IGNORED_IDS
-        // - Message does not start with "/" (slash commands)
         if (!IGNORED_IDS.includes(message.author.id) && !message.content.startsWith('/')) {
             if (message.content.length > 0) {
-                await message.channel.send(message.content);
+                let textToSend = message.content;
+
+                // Apply reverse if enabled
+                if (reverseEnabled) {
+                    textToSend = textToSend.split('').reverse().join('');
+                }
+
+                await message.channel.send(textToSend);
             }
         }
     }
