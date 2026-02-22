@@ -99,6 +99,17 @@ function speakInVC(guildId, text) {
     }
 }
 
+// Helper for Scrambling words
+function scrambleWord(word) {
+    if (word.length <= 2) return word;
+    const chars = word.split('');
+    for (let i = chars.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [chars[i], chars[j]] = [chars[j], chars[i]];
+    }
+    return chars.join('');
+}
+
 // ====================== FILTER LOGIC ======================
 const ALLOWED_WORDS = ["assist", "assistance", "assistant", "associat", "class", "classic", "glass", "grass", "pass", "bass", "compass", "hello", "shell", "peacock", "cocktail", "babcock"];
 const MILD_BAD_WORDS = ["fuck", "f*ck", "f**k", "f-ck", "fck", "fu-", "f-", "f*cking", "fucking", "shit", "s*it", "s**t", "sh!t", "ass", "bitch", "hoe", "whore", "slut", "cunt", "dick", "pussy", "cock", "bastard", "sexy"];
@@ -131,13 +142,13 @@ client.once('ready', async () => {
 
     // Set Presence Logic
     client.user.setPresence({ 
-        activities: [{ name: 'hopping around Toon Springs', type: 0 }], 
+        activities: [{ name: 'quick tap', type: 0 }], 
         status: 'online' 
     });
 
     const commands = [
         new SlashCommandBuilder().setName('copytoggle').setDescription('Turn automatic message copying ON or OFF'),
-        new SlashCommandBuilder().setName('reversetoggle').setDescription('Turn reverse mode ON or OFF'),
+        new SlashCommandBuilder().setName('reversetoggle').setDescription('Turn character scramble ON or OFF'),
         new SlashCommandBuilder().setName('afk').setDescription('Set an AFK status').addStringOption(opt => opt.setName('reason').setDescription('Why are you away?')),
         new SlashCommandBuilder().setName('say').setDescription('Say something anonymously').addStringOption(opt => opt.setName('text').setDescription('Text').setRequired(true)),
         new SlashCommandBuilder().setName('ask').setDescription('Ask AI').addStringOption(opt => opt.setName('prompt').setDescription('Question').setRequired(true)),
@@ -166,7 +177,7 @@ client.on('interactionCreate', async (interaction) => {
 
     if (commandName === 'reversetoggle') {
         reverseEnabled = !reverseEnabled;
-        return interaction.reply({ content: `Reverse mode is now **${reverseEnabled ? 'ENABLED 🔄' : 'DISABLED ⏹️'}**.` });
+        return interaction.reply({ content: `Character Scramble is now **${reverseEnabled ? 'ENABLED 🔄' : 'DISABLED ⏹️'}**.` });
     }
 
     if (commandName === 'afk') {
@@ -239,9 +250,12 @@ client.on('messageCreate', async (message) => {
             if (message.content.length > 0) {
                 let textToSend = message.content;
 
-                // Quick Tap Reversal logic
+                // QUICK TAP: Scramble logic
                 if (reverseEnabled) {
-                    textToSend = textToSend.split('').reverse().join('');
+                    textToSend = textToSend
+                        .split(' ')
+                        .map(word => scrambleWord(word))
+                        .join(' ');
                 }
 
                 await message.channel.send(textToSend);
