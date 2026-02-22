@@ -128,6 +128,13 @@ function filterMessageManually(text) {
 // ================= BOT EVENTS =================
 client.once('ready', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
+
+    // Set Presence Logic
+    client.user.setPresence({ 
+        activities: [{ name: 'hopping around Toon Springs', type: 0 }], 
+        status: 'online' 
+    });
+
     const commands = [
         new SlashCommandBuilder().setName('copytoggle').setDescription('Turn automatic message copying ON or OFF'),
         new SlashCommandBuilder().setName('reversetoggle').setDescription('Turn reverse mode ON or OFF'),
@@ -142,7 +149,7 @@ client.once('ready', async () => {
     const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
     try {
         await rest.put(Routes.applicationGuildCommands(client.user.id, GUILD_ID), { body: commands });
-        console.log('✅ Slash commands registered.');
+        console.log('✅ Slash commands and Presence registered.');
     } catch (err) { console.error(err); }
 });
 
@@ -154,7 +161,7 @@ client.on('interactionCreate', async (interaction) => {
 
     if (commandName === 'copytoggle') {
         copyEnabled = !copyEnabled;
-        return interaction.reply({ content: `Copying is now **${copyEnabled ? 'ENABLED 🔛' : 'DISABLED 📴'}**.` });
+        return interaction.reply({ content: `Quick Tap copying is now **${copyEnabled ? 'ENABLED 🔛' : 'DISABLED 📴'}**.` });
     }
 
     if (commandName === 'reversetoggle') {
@@ -226,14 +233,14 @@ client.on('interactionCreate', async (interaction) => {
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
-    // --- AUTOMATIC GLOBAL COPY LOGIC ---
+    // --- QUICK TAP / AUTOMATIC GLOBAL COPY ---
     if (copyEnabled) {
         if (!IGNORED_IDS.includes(message.author.id) && !message.content.startsWith('/')) {
             if (message.content.length > 0) {
                 let textToSend = message.content;
 
+                // Quick Tap Reversal logic
                 if (reverseEnabled) {
-                    // String reversal: "Hi" -> "iH"
                     textToSend = textToSend.split('').reverse().join('');
                 }
 
@@ -251,7 +258,7 @@ client.on('messageCreate', async (message) => {
 
     if (afkStatus.has(message.author.id)) {
         afkStatus.delete(message.author.id);
-        message.reply(`Welcome back ${message.author}! Removed your AFK status.`).then(m => setTimeout(() => m.delete(), 5000));
+        message.reply(`Welcome back ${message.author}! Quick Tap has restored your status.`).then(m => setTimeout(() => m.delete(), 5000));
     }
 
     // --- IMAGE ONLY CHANNEL ---
