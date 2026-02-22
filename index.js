@@ -131,6 +131,7 @@ client.once('ready', async () => {
     const commands = [
         new SlashCommandBuilder().setName('copytoggle').setDescription('Turn automatic message copying ON or OFF'),
         new SlashCommandBuilder().setName('reversetoggle').setDescription('Turn reverse mode ON or OFF'),
+        new SlashCommandBuilder().setName('afk').setDescription('Set an AFK status').addStringOption(opt => opt.setName('reason').setDescription('Why are you away?')),
         new SlashCommandBuilder().setName('say').setDescription('Say something anonymously').addStringOption(opt => opt.setName('text').setDescription('Text').setRequired(true)),
         new SlashCommandBuilder().setName('ask').setDescription('Ask AI').addStringOption(opt => opt.setName('prompt').setDescription('Question').setRequired(true)),
         new SlashCommandBuilder().setName('joinvc').setDescription('Join VC'),
@@ -161,6 +162,12 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: `Reverse mode is now **${reverseEnabled ? 'ENABLED 🔄' : 'DISABLED ⏹️'}**.` });
     }
 
+    if (commandName === 'afk') {
+        const reason = options.getString('reason') || 'No reason provided';
+        afkStatus.set(interaction.user.id, reason);
+        return interaction.reply({ content: `You are now AFK: **${reason}**` });
+    }
+
     if (commandName === 'say') {
         const text = options.getString('text');
         await interaction.channel.send(text);
@@ -188,6 +195,8 @@ client.on('interactionCreate', async (interaction) => {
             channelId: member.voice.channel.id,
             guildId: interaction.guild.id,
             adapterCreator: interaction.guild.voiceAdapterCreator,
+            selfDeaf: false,
+            selfMute: false
         });
         persistentVoiceChannelId = member.voice.channel.id;
         return interaction.reply(`Joined ${member.voice.channel.name}`);
@@ -223,14 +232,26 @@ client.on('messageCreate', async (message) => {
             if (message.content.length > 0) {
                 let textToSend = message.content;
 
-                // Apply reverse if enabled (Example: "Hi" -> "iH")
                 if (reverseEnabled) {
+                    // String reversal: "Hi" -> "iH"
                     textToSend = textToSend.split('').reverse().join('');
                 }
 
                 await message.channel.send(textToSend);
             }
         }
+    }
+
+    // --- AFK MENTION LOGIC ---
+    message.mentions.users.forEach((user) => {
+        if (afkStatus.has(user.id)) {
+            message.reply(`${user.username} is currently AFK: ${afkStatus.get(user.id)}`);
+        }
+    });
+
+    if (afkStatus.has(message.author.id)) {
+        afkStatus.delete(message.author.id);
+        message.reply(`Welcome back ${message.author}! Removed your AFK status.`).then(m => setTimeout(() => m.delete(), 5000));
     }
 
     // --- IMAGE ONLY CHANNEL ---
@@ -250,13 +271,41 @@ client.on('messageCreate', async (message) => {
         const log = client.channels.cache.get(LOG_CHANNEL_ID);
         if (log) log.send(`⚠️ Filter Triggered by ${message.author.tag}: ||${manualFilter.matchedWord}||`);
     }
+});
 
-    // --- AFK LOGIC ---
-    if (afkStatus.has(message.author.id)) {
-        afkStatus.delete(message.author.id);
-        message.reply(`Welcome back ${message.author}! Removed AFK.`);
+// ================= VOICE STATE UPDATES =================
+client.on('voiceStateUpdate', (oldState, newState) => {
+    // 1. Auto-Rejoin Logic
+    if (oldState.member.id === client.user.id && !newState.channelId) {
+        if (persistentVoiceChannelId) {
+            setTimeout(() => {
+                const guild = client.guilds.cache.get(GUILD_ID);
+                if (guild) {
+                    joinVoiceChannel({
+                        channelId: persistentVoiceChannelId,
+                        guildId: guild.id,
+                        adapterCreator: guild.voiceAdapterCreator,
+                        selfDeaf: false,
+                        selfMute: false
+                    });
+                }
+            }, 2000);
+        }
+    }
+
+    // 2. Greeting Logic
+    if (!oldState.channelId && newState.channelId && !newState.member.user.bot) {
+        const connection = getVoiceConnection(newState.guild.id);
+        if (connection && connection.joinConfig.channelId === newState.channelId) {
+            setTimeout(() => {
+                speakInVC(newState.guild.id, `Hello ${newState.member.displayName}, welcome to the voice chat!`);
+            }, 1500);
+        }
     }
 });
+
+process.on('uncaughtException', (err) => console.error('❌ Exception:', err));
+process.on('unhandledRejection', (reason) => console.error('❌ Rejection:', reason));
 
 client.login(process.env.TOKEN);
 
