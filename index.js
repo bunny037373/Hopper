@@ -75,8 +75,8 @@ const IGNORED_IDS = ['888238712780128288', '1360737030895833360'];
 
 // ====================== DATA STORAGE ======================
 const afkStatus = new Map();
-let copyEnabled = true;    // Global toggle for copying
-let reverseEnabled = false; // Global toggle for reverse mode
+let copyEnabled = true;    
+let reverseEnabled = false; 
 let persistentVoiceChannelId = null;
 
 // ====================== HELPER FUNCTIONS ======================
@@ -149,22 +149,67 @@ client.once('ready', async () => {
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
 
-    // --- /copytoggle handler ---
-    if (interaction.commandName === 'copytoggle') {
+    const { commandName, options } = interaction;
+
+    if (commandName === 'copytoggle') {
         copyEnabled = !copyEnabled;
         return interaction.reply({ content: `Copying is now **${copyEnabled ? 'ENABLED 🔛' : 'DISABLED 📴'}**.` });
     }
 
-    // --- /reversetoggle handler ---
-    if (interaction.commandName === 'reversetoggle') {
+    if (commandName === 'reversetoggle') {
         reverseEnabled = !reverseEnabled;
         return interaction.reply({ content: `Reverse mode is now **${reverseEnabled ? 'ENABLED 🔄' : 'DISABLED ⏹️'}**.` });
     }
 
-    if (interaction.commandName === 'say') {
-        const text = interaction.options.getString('text');
+    if (commandName === 'say') {
+        const text = options.getString('text');
         await interaction.channel.send(text);
         return interaction.reply({ content: "Sent", ephemeral: true });
+    }
+
+    if (commandName === 'ask') {
+        if (!AI_ENABLED) return interaction.reply("AI is currently disabled.");
+        await interaction.deferReply();
+        try {
+            const prompt = options.getString('prompt');
+            const result = await aiModelInstance.generateContent(prompt);
+            const response = await result.response;
+            return interaction.editReply(response.text().substring(0, 2000));
+        } catch (e) {
+            return interaction.editReply("AI Error: Could not generate response.");
+        }
+    }
+
+    if (commandName === 'joinvc') {
+        const member = interaction.member;
+        if (!member.voice.channel) return interaction.reply("Join a VC first!");
+        
+        joinVoiceChannel({
+            channelId: member.voice.channel.id,
+            guildId: interaction.guild.id,
+            adapterCreator: interaction.guild.voiceAdapterCreator,
+        });
+        persistentVoiceChannelId = member.voice.channel.id;
+        return interaction.reply(`Joined ${member.voice.channel.name}`);
+    }
+
+    if (commandName === 'leavevc') {
+        const connection = getVoiceConnection(interaction.guild.id);
+        if (connection) {
+            connection.destroy();
+            persistentVoiceChannelId = null;
+            return interaction.reply("Left the voice channel.");
+        }
+        return interaction.reply("I am not in a voice channel.");
+    }
+
+    if (commandName === 'clear') {
+        if (!interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
+            return interaction.reply({ content: "You need Manage Messages permission.", ephemeral: true });
+        }
+        const num = options.getInteger('number');
+        const deleted = await interaction.channel.bulkDelete(Math.min(num, 100), true);
+        return interaction.reply({ content: `Cleared ${deleted.size} messages.`, ephemeral: true });
     }
 });
 
@@ -178,7 +223,7 @@ client.on('messageCreate', async (message) => {
             if (message.content.length > 0) {
                 let textToSend = message.content;
 
-                // Apply reverse if enabled
+                // Apply reverse if enabled (Example: "Hi" -> "iH")
                 if (reverseEnabled) {
                     textToSend = textToSend.split('').reverse().join('');
                 }
