@@ -320,7 +320,6 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply("Not in VC.");
         }
         
-        // ... (Keep other simple commands like kick, ban, clear, setup) ...
         if (interaction.commandName === 'kick') {
             const user = interaction.options.getUser('user');
             const member = interaction.guild.members.cache.get(user.id);
@@ -332,6 +331,7 @@ client.on('interactionCreate', async (interaction) => {
 
 // ================= MESSAGE HANDLER (Filters & Threads) =================
 client.on('messageCreate', async (message) => {
+    // IGNORES ALL BOTS HERE
     if (message.author.bot || !message.guild) return;
 
     // Image Only Channel
@@ -365,6 +365,18 @@ client.on('messageCreate', async (message) => {
     if (message.content.startsWith('?afk')) {
         afkStatus.set(message.author.id, { reason: message.content.slice(4).trim() || 'AFK', timestamp: Date.now() });
         message.reply("AFK set.");
+    }
+
+    // ================= COPY MESSAGE LOGIC =================
+    // Triggers when a user types "?copy [message]"
+    if (message.content.toLowerCase().startsWith('?copy ')) {
+        const textToCopy = message.content.slice(6).trim(); 
+        
+        if (textToCopy) {
+            // Delete the original message so only the bot says it
+            await message.delete().catch(() => {}); 
+            await message.channel.send(textToCopy);
+        }
     }
 });
 
@@ -417,4 +429,3 @@ http.createServer((req, res) => {
     res.writeHead(200);
     res.end('Bot Running');
 }).listen(PORT, () => console.log(`Web server listening on port ${PORT}`));
-
