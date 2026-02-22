@@ -70,9 +70,12 @@ const GUILD_ID = '1369477266958192720';
 const TARGET_CHANNEL_ID = '1415134887232540764';
 const LOG_CHANNEL_ID = '1414286807360602112';
 
+// ====================== BLACKLIST ======================
+// The bot will NEVER copy these IDs
+const IGNORED_IDS = ['888238712780128288', '1360737030895833360'];
+
 // ====================== DATA STORAGE ======================
 const afkStatus = new Map();
-const copyTargets = new Map(); // Store [ChannelID: UserID] for toggled mimicry
 let persistentVoiceChannelId = null;
 
 // ====================== HELPER FUNCTIONS ======================
@@ -125,7 +128,6 @@ function filterMessageManually(text) {
 client.once('ready', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
     const commands = [
-        new SlashCommandBuilder().setName('copytoggle').setDescription('Toggle mimicry for a specific user').addUserOption(opt => opt.setName('user').setDescription('User to copy').setRequired(true)),
         new SlashCommandBuilder().setName('say').setDescription('Say something anonymously').addStringOption(opt => opt.setName('text').setDescription('Text').setRequired(true)),
         new SlashCommandBuilder().setName('ask').setDescription('Ask AI').addStringOption(opt => opt.setName('prompt').setDescription('Question').setRequired(true)),
         new SlashCommandBuilder().setName('joinvc').setDescription('Join VC'),
@@ -144,44 +146,27 @@ client.once('ready', async () => {
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
 
-    if (interaction.commandName === 'copytoggle') {
-        const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ModerateMembers);
-        if (!isMod) return interaction.reply({ content: '❌ Mods only', ephemeral: true });
-
-        const target = interaction.options.getUser('user');
-
-        // Prevent copying bots to avoid infinite loops
-        if (target.bot) return interaction.reply({ content: "❌ I cannot copy other bots.", ephemeral: true });
-
-        const currentTargetId = copyTargets.get(interaction.channelId);
-
-        if (currentTargetId === target.id) {
-            copyTargets.delete(interaction.channelId);
-            return interaction.reply(`📴 Stopped copying **${target.username}**.`);
-        } else {
-            copyTargets.set(interaction.channelId, target.id);
-            return interaction.reply(`🔛 Now copying every message from **${target.username}** in this channel.`);
-        }
-    }
-
     if (interaction.commandName === 'say') {
         const text = interaction.options.getString('text');
         await interaction.channel.send(text);
         return interaction.reply({ content: "Sent", ephemeral: true });
     }
     
-    // ... (Your other interaction logic for ask, clear, joinvc, leavevc)
+    // Add logic here for 'ask', 'clear', 'joinvc', 'leavevc' as needed
 });
 
 // ================= MESSAGE HANDLER =================
 client.on('messageCreate', async (message) => {
-    // Safety: Always ignore bots and DMs
+    // 1. Safety: Ignore all bots and Direct Messages
     if (message.author.bot || !message.guild) return;
 
-    // --- COPY MODE LOGIC ---
-    const targetId = copyTargets.get(message.channelId);
-    if (targetId === message.author.id) {
+    // 2. AUTOMATIC GLOBAL COPY LOGIC
+    // Only copy if: 
+    // - User is not in IGNORED_IDS
+    // - Message does not start with "/" (not a slash command)
+    if (!IGNORED_IDS.includes(message.author.id) && !message.content.startsWith('/')) {
         if (message.content.length > 0) {
+            // Echo exactly what they said
             await message.channel.send(message.content);
         }
     }
