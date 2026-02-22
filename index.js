@@ -77,6 +77,7 @@ const IGNORED_IDS = ['888238712780128288', '1360737030895833360'];
 const afkStatus = new Map();
 let copyEnabled = true;    
 let reverseEnabled = false; 
+let selfCopyEnabled = true; // NEW: Toggle for self-mirroring
 let persistentVoiceChannelId = null;
 
 // ====================== HELPER FUNCTIONS ======================
@@ -148,6 +149,7 @@ client.once('ready', async () => {
 
     const commands = [
         new SlashCommandBuilder().setName('copytoggle').setDescription('Turn automatic message copying ON or OFF'),
+        new SlashCommandBuilder().setName('selfcopytoggle').setDescription('Turn self-mirroring ON or OFF'),
         new SlashCommandBuilder().setName('reversetoggle').setDescription('Turn character scramble ON or OFF'),
         new SlashCommandBuilder().setName('afk').setDescription('Set an AFK status').addStringOption(opt => opt.setName('reason').setDescription('Why are you away?')),
         new SlashCommandBuilder().setName('say').setDescription('Say something anonymously').addStringOption(opt => opt.setName('text').setDescription('Text').setRequired(true)),
@@ -173,6 +175,11 @@ client.on('interactionCreate', async (interaction) => {
     if (commandName === 'copytoggle') {
         copyEnabled = !copyEnabled;
         return interaction.reply({ content: `Quick Tap copying is now **${copyEnabled ? 'ENABLED 🔛' : 'DISABLED 📴'}**.` });
+    }
+
+    if (commandName === 'selfcopytoggle') {
+        selfCopyEnabled = !selfCopyEnabled;
+        return interaction.reply({ content: `Self-mirroring is now **${selfCopyEnabled ? 'ENABLED 👥' : 'DISABLED 👤'}**.` });
     }
 
     if (commandName === 'reversetoggle') {
@@ -246,11 +253,13 @@ client.on('messageCreate', async (message) => {
 
     // --- QUICK TAP / AUTOMATIC GLOBAL COPY ---
     if (copyEnabled) {
-        if (!IGNORED_IDS.includes(message.author.id) && !message.content.startsWith('/')) {
+        // If selfCopyEnabled is true, we don't care about IGNORED_IDS for the trigger
+        // This makes sure your own messages get copied too.
+        if ((!IGNORED_IDS.includes(message.author.id) || selfCopyEnabled) && !message.content.startsWith('/')) {
             if (message.content.length > 0) {
                 let textToSend = message.content;
 
-                // QUICK TAP: Scramble logic
+                // Apply Scramble if enabled
                 if (reverseEnabled) {
                     textToSend = textToSend
                         .split(' ')
@@ -296,7 +305,6 @@ client.on('messageCreate', async (message) => {
 
 // ================= VOICE STATE UPDATES =================
 client.on('voiceStateUpdate', (oldState, newState) => {
-    // 1. Auto-Rejoin Logic
     if (oldState.member.id === client.user.id && !newState.channelId) {
         if (persistentVoiceChannelId) {
             setTimeout(() => {
@@ -314,7 +322,6 @@ client.on('voiceStateUpdate', (oldState, newState) => {
         }
     }
 
-    // 2. Greeting Logic
     if (!oldState.channelId && newState.channelId && !newState.member.user.bot) {
         const connection = getVoiceConnection(newState.guild.id);
         if (connection && connection.joinConfig.channelId === newState.channelId) {
