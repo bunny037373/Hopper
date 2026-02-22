@@ -1,361 +1,64 @@
-// Import necessary modules
-const {
-    Client,
-    GatewayIntentBits,
-    ActionRowBuilder,
-    ButtonBuilder,
-    ButtonStyle,
-    REST,
-    Routes,
-    SlashCommandBuilder,
-    PermissionsBitField,
-    ThreadChannel,
-    AttachmentBuilder,
-    EmbedBuilder,
-    ChannelType 
-} = require('discord.js');
+require("dotenv").config();
+const express = require("express");
+const { Client, GatewayIntentBits, ActivityType } = require("discord.js");
 
-// --- VOICE IMPORTS ---
-const { 
-    joinVoiceChannel, 
-    getVoiceConnection, 
-    createAudioPlayer,
-    createAudioResource, 
-    VoiceConnectionStatus,
-    entersState
-} = require('@discordjs/voice');
-const discordTTS = require('discord-tts'); 
+const app = express();
+const PORT = process.env.PORT || 4000;
+const TOKEN = process.env.DISCORD_TOKEN;
+const TENOR_KEY = process.env.TENOR_API_KEY;
 
-const http = require('http');
-const fs = require('fs');
+// --- WEB SERVER ---
+app.get("/", (req, res) => {
+  res.send("✅ Floppa Bot is awake");
+});
+app.listen(PORT, () => console.log(`🌐 Web server running on port ${PORT}`));
 
-// --- AI Import ---
-const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require('@google/generative-ai');
-
-// Check for the mandatory token environment variable
-if (!process.env.TOKEN) {
-    console.error("❌ TOKEN not found. Add TOKEN in Environment Variables.");
-    process.exit(1);
-}
-
-// --- AI Key Check ---
-let aiModelInstance;
-let AI_ENABLED = !!process.env.GEMINI_API_KEY;
-
-if (!AI_ENABLED) {
-    console.error("❌ GEMINI_API_KEY not found. AI commands (/ask) and AI moderation are DISABLED.");
-} else {
-    try {
-        const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-        aiModelInstance = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-    } catch (e) {
-        console.error("❌ Failed to initialize GoogleGenerativeAI.", e);
-        AI_ENABLED = false;
-    }
-}
-
-// ====================== CLIENT SETUP ======================
+// --- DISCORD BOT ---
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.GuildVoiceStates 
-    ]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
+  ]
 });
 
-// ====================== CONFIGURATION ======================
-const GUILD_ID = '1369477266958192720';
-const TARGET_CHANNEL_ID = '1415134887232540764';
-const LOG_CHANNEL_ID = '1414286807360602112';
+let cooldown = false;
 
-// ====================== BLACKLIST ======================
-const IGNORED_IDS = ['888238712780128288', '1360737030895833360'];
-
-// ====================== DATA STORAGE ======================
-const afkStatus = new Map();
-let copyEnabled = true;    
-let reverseEnabled = false; 
-let selfCopyEnabled = true; // NEW: Toggle for self-mirroring
-let persistentVoiceChannelId = null;
-
-// ====================== HELPER FUNCTIONS ======================
-
-function speakInVC(guildId, text) {
-    const connection = getVoiceConnection(guildId);
-    if (!connection) return false;
-    try {
-        const safeText = text.length > 200 ? text.substring(0, 200) + "..." : text;
-        const stream = discordTTS.getVoiceStream(safeText);
-        const resource = createAudioResource(stream, { inlineVolume: true });
-        resource.volume.setVolume(1);
-        const player = createAudioPlayer();
-        player.play(resource);
-        connection.subscribe(player);
-        return true;
-    } catch (e) {
-        console.error("TTS Error:", e);
-        return false;
-    }
+async function getRandomFloppa() {
+  try {
+    // Using built-in fetch (standard in Node 25)
+    const response = await fetch(`https://tenor.googleapis.com/v2/search?q=floppa&key=${TENOR_KEY}&limit=20`);
+    const json = await response.json();
+    if (!json.results || json.results.length === 0) return "😭 No Floppa found";
+    const randomIndex = Math.floor(Math.random() * json.results.length);
+    return json.results[randomIndex].media_formats.gif.url;
+  } catch (err) {
+    console.error("Fetch Error:", err);
+    return "❌ Error getting Floppa";
+  }
 }
 
-// Helper for Scrambling words
-function scrambleWord(word) {
-    if (word.length <= 2) return word;
-    const chars = word.split('');
-    for (let i = chars.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [chars[i], chars[j]] = [chars[j], chars[i]];
-    }
-    return chars.join('');
-}
-
-// ====================== FILTER LOGIC ======================
-const ALLOWED_WORDS = ["assist", "assistance", "assistant", "associat", "class", "classic", "glass", "grass", "pass", "bass", "compass", "hello", "shell", "peacock", "cocktail", "babcock"];
-
-// ⚠️ PASTE YOUR ORIGINAL ARRAYS HERE. THEY HAVE BEEN HIDDEN FOR SAFETY COMPLIANCE ⚠️
-const MILD_BAD_WORDS = [ /* Your mild words here */ ];
-const SEVERE_WORDS = [ /* Your severe words here */ ];
-
-const LEET_MAP = { '0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '@': 'a', '$': 's', '!': 'i', '(': 'c', '+': 't', '8': 'b', '*': 'o', '9': 'g' };
-
-function filterMessageManually(text) {
-    if (!text) return { isSevere: false, isMild: false };
-    let normalized = text.toLowerCase().replace(/[^a-z0-9]/g, '');
-    let leetNormalized = normalized.split('').map(char => LEET_MAP[char] || char).join('');
-    const checkNormalizedText = (list, normText) => {
-        for (const badWord of list) {
-            if (normText.includes(badWord)) {
-                if (ALLOWED_WORDS.some(allowed => allowed.includes(badWord))) continue;
-                return badWord;
-            }
-        }
-        return null;
-    };
-    let severeMatch = checkNormalizedText(SEVERE_WORDS, normalized) || checkNormalizedText(SEVERE_WORDS, leetNormalized);
-    if (severeMatch) return { isSevere: true, isMild: false, matchedWord: severeMatch };
-    let mildMatch = checkNormalizedText(MILD_BAD_WORDS, normalized) || checkNormalizedText(MILD_BAD_WORDS, leetNormalized);
-    if (mildMatch) return { isSevere: false, isMild: true, matchedWord: mildMatch };
-    return { isSevere: false, isMild: false, matchedWord: null };
-}
-
-// ================= BOT EVENTS =================
-client.once('ready', async () => {
-    console.log(`✅ Logged in as ${client.user.tag}`);
-
-    // Set Presence Logic
-    client.user.setPresence({ 
-        activities: [{ name: 'quick tap', type: 0 }], 
-        status: 'Idle' 
-    });
-
-    const commands = [
-        new SlashCommandBuilder().setName('copytoggle').setDescription('Turn automatic message copying ON or OFF'),
-        new SlashCommandBuilder().setName('selfcopytoggle').setDescription('Turn self-mirroring ON or OFF'),
-        new SlashCommandBuilder().setName('reversetoggle').setDescription('Turn character scramble ON or OFF'),
-        new SlashCommandBuilder().setName('afk').setDescription('Set an AFK status').addStringOption(opt => opt.setName('reason').setDescription('Why are you away?')),
-        new SlashCommandBuilder().setName('say').setDescription('Say something anonymously').addStringOption(opt => opt.setName('text').setDescription('Text').setRequired(true)),
-        new SlashCommandBuilder().setName('ask').setDescription('Ask AI').addStringOption(opt => opt.setName('prompt').setDescription('Question').setRequired(true)),
-        
-        // --- UPDATED COMMAND ---
-        new SlashCommandBuilder()
-            .setName('joinvc')
-            .setDescription('Join a voice channel')
-            .addChannelOption(opt => 
-                opt.setName('channel')
-                   .setDescription('The channel to join (defaults to yours)')
-                   .addChannelTypes(ChannelType.GuildVoice)
-            ),
-        
-        new SlashCommandBuilder().setName('leavevc').setDescription('Leave VC'),
-        new SlashCommandBuilder().setName('clear').setDescription('Clear messages').addIntegerOption(opt => opt.setName('number').setDescription('Number').setRequired(true))
-    ].map(c => c.toJSON());
-
-    const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
-    try {
-        await rest.put(Routes.applicationGuildCommands(client.user.id, GUILD_ID), { body: commands });
-        console.log('✅ Slash commands and Presence registered.');
-    } catch (err) { console.error(err); }
+client.once("ready", () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
+  client.user.setPresence({
+    activities: [{ name: "for !floppa", type: ActivityType.Watching }]
+  });
 });
 
-// ================= INTERACTION HANDLER =================
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
+client.on("messageCreate", async (message) => {
+  if (message.author.bot) return;
+  const content = message.content.toLowerCase();
 
-    const { commandName, options } = interaction;
-
-    if (commandName === 'copytoggle') {
-        copyEnabled = !copyEnabled;
-        return interaction.reply({ content: `Quick Tap copying is now **${copyEnabled ? 'ENABLED 🔛' : 'DISABLED 📴'}**.` });
-    }
-
-    if (commandName === 'selfcopytoggle') {
-        selfCopyEnabled = !selfCopyEnabled;
-        return interaction.reply({ content: `Self-mirroring is now **${selfCopyEnabled ? 'ENABLED 👥' : 'DISABLED 👤'}**.` });
-    }
-
-    if (commandName === 'reversetoggle') {
-        reverseEnabled = !reverseEnabled;
-        return interaction.reply({ content: `Character Scramble is now **${reverseEnabled ? 'ENABLED 🔄' : 'DISABLED ⏹️'}**.` });
-    }
-
-    if (commandName === 'afk') {
-        const reason = options.getString('reason') || 'No reason provided';
-        afkStatus.set(interaction.user.id, reason);
-        return interaction.reply({ content: `You are now AFK: **${reason}**` });
-    }
-
-    if (commandName === 'say') {
-        const text = options.getString('text');
-        await interaction.channel.send(text);
-        return interaction.reply({ content: "Sent", ephemeral: true });
-    }
-
-    if (commandName === 'ask') {
-        if (!AI_ENABLED) return interaction.reply("AI is currently disabled.");
-        await interaction.deferReply();
-        try {
-            const prompt = options.getString('prompt');
-            const result = await aiModelInstance.generateContent(prompt);
-            const response = await result.response;
-            return interaction.editReply(response.text().substring(0, 2000));
-        } catch (e) {
-            return interaction.editReply("AI Error: Could not generate response.");
-        }
-    }
-
-    // --- UPDATED HANDLER ---
-    if (commandName === 'joinvc') {
-        const member = interaction.member;
-        const targetChannel = options.getChannel('channel') || member.voice.channel;
-
-        if (!targetChannel) {
-            return interaction.reply({ content: "Please join a VC first or specify a channel in the command options!", ephemeral: true });
-        }
-        
-        try {
-            joinVoiceChannel({
-                channelId: targetChannel.id,
-                guildId: interaction.guild.id,
-                adapterCreator: interaction.guild.voiceAdapterCreator,
-                selfDeaf: false,
-                selfMute: false
-            });
-            persistentVoiceChannelId = targetChannel.id;
-            return interaction.reply(`Joined **${targetChannel.name}**`);
-        } catch (err) {
-            console.error(err);
-            return interaction.reply({ content: "Failed to join that channel.", ephemeral: true });
-        }
-    }
-
-    if (commandName === 'leavevc') {
-        const connection = getVoiceConnection(interaction.guild.id);
-        if (connection) {
-            connection.destroy();
-            persistentVoiceChannelId = null;
-            return interaction.reply("Left the voice channel.");
-        }
-        return interaction.reply("I am not in a voice channel.");
-    }
-
-    if (commandName === 'clear') {
-        if (!interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
-            return interaction.reply({ content: "You need Manage Messages permission.", ephemeral: true });
-        }
-        const num = options.getInteger('number');
-        const deleted = await interaction.channel.bulkDelete(Math.min(num, 100), true);
-        return interaction.reply({ content: `Cleared ${deleted.size} messages.`, ephemeral: true });
-    }
+  if (content === "!floppa" || content.includes("bruh") || content.includes("buh")) {
+    if (cooldown) return;
+    cooldown = true;
+    const gif = await getRandomFloppa();
+    await message.channel.send(gif);
+    setTimeout(() => (cooldown = false), 3000);
+  }
 });
 
-// ================= MESSAGE HANDLER =================
-client.on('messageCreate', async (message) => {
-    if (message.author.bot || !message.guild) return;
-
-    // --- QUICK TAP / AUTOMATIC GLOBAL COPY ---
-    if (copyEnabled) {
-        if ((!IGNORED_IDS.includes(message.author.id) || selfCopyEnabled) && !message.content.startsWith('/')) {
-            if (message.content.length > 0) {
-                let textToSend = message.content;
-
-                if (reverseEnabled) {
-                    textToSend = textToSend
-                        .split(' ')
-                        .map(word => scrambleWord(word))
-                        .join(' ');
-                }
-
-                await message.channel.send(textToSend);
-            }
-        }
-    }
-
-    // --- AFK MENTION LOGIC ---
-    message.mentions.users.forEach((user) => {
-        if (afkStatus.has(user.id)) {
-            message.reply(`${user.username} is currently AFK: ${afkStatus.get(user.id)}`);
-        }
-    });
-
-    if (afkStatus.has(message.author.id)) {
-        afkStatus.delete(message.author.id);
-        message.reply(`Welcome back ${message.author}! Quick Tap has restored your status.`).then(m => setTimeout(() => m.delete(), 5000));
-    }
-
-    // --- IMAGE ONLY CHANNEL ---
-    if (message.channel.id === TARGET_CHANNEL_ID) {
-        if (message.attachments.size === 0) {
-            await message.delete().catch(() => {});
-            return;
-        }
-        await message.react('✨');
-        await message.startThread({ name: `${message.author.username}'s Post`, autoArchiveDuration: 60 });
-    }
-
-    // --- MANUAL FILTER ---
-    const manualFilter = filterMessageManually(message.content);
-    if (manualFilter.isSevere || manualFilter.isMild) {
-        await message.delete().catch(() => {});
-        const log = client.channels.cache.get(LOG_CHANNEL_ID);
-        if (log) log.send(`⚠️ Filter Triggered by ${message.author.tag}: ||${manualFilter.matchedWord}||`);
-    }
+// LOGIN ERROR CATCHING
+client.login(TOKEN).catch(err => {
+  console.error("❌ LOGIN FAILED:", err.message);
 });
-
-// ================= VOICE STATE UPDATES =================
-client.on('voiceStateUpdate', (oldState, newState) => {
-    if (oldState.member.id === client.user.id && !newState.channelId) {
-        if (persistentVoiceChannelId) {
-            setTimeout(() => {
-                const guild = client.guilds.cache.get(GUILD_ID);
-                if (guild) {
-                    joinVoiceChannel({
-                        channelId: persistentVoiceChannelId,
-                        guildId: guild.id,
-                        adapterCreator: guild.voiceAdapterCreator,
-                        selfDeaf: false,
-                        selfMute: false
-                    });
-                }
-            }, 2000);
-        }
-    }
-
-    if (!oldState.channelId && newState.channelId && !newState.member.user.bot) {
-        const connection = getVoiceConnection(newState.guild.id);
-        if (connection && connection.joinConfig.channelId === newState.channelId) {
-            setTimeout(() => {
-                speakInVC(newState.guild.id, `Hello ${newState.member.displayName}, welcome to the voice chat!`);
-            }, 1500);
-        }
-    }
-});
-
-process.on('uncaughtException', (err) => console.error('❌ Exception:', err));
-process.on('unhandledRejection', (reason) => console.error('❌ Rejection:', reason));
-
-client.login(process.env.TOKEN);
-
-const PORT = process.env.PORT || 1902;
-http.createServer((req, res) => { res.writeHead(200); res.end('Bot Running'); }).listen(PORT);
