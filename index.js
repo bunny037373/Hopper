@@ -169,7 +169,7 @@ async function checkMessageToxicity(text) {
 client.once('ready', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
     
-    client.user.setPresence({ activities: [{ name: 'hopping around Toon Springs', type: 0 }], status: 'online' });
+    client.user.setPresence({ activities: [{ name: 'Big brain. Bigger personality', type: 0 }], status: 'online' });
 
     // Commands
     const commands = [
@@ -417,3 +417,4 @@ http.createServer((req, res) => {
     res.writeHead(200);
     res.end('Bot Running');
 }).listen(PORT, () => console.log(`Web server listening on port ${PORT}`));
+
