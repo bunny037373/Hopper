@@ -1,86 +1,341 @@
-require("dotenv").config();
-const express = require("express");
-const { Client, GatewayIntentBits, ActivityType, EmbedBuilder } = require("discord.js");
+// Import necessary modules
+const {
+    Client,
+    GatewayIntentBits,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    REST,
+    Routes,
+    SlashCommandBuilder,
+    PermissionsBitField,
+    ThreadChannel,
+    AttachmentBuilder,
+    EmbedBuilder,
+    ChannelType 
+} = require('discord.js');
 
-const app = express();
-const PORT = process.env.PORT || 10000;
-const TOKEN = process.env.DISCORD_TOKEN;
+// --- VOICE IMPORTS ---
+const { 
+    joinVoiceChannel, 
+    getVoiceConnection, 
+    createAudioPlayer,
+    createAudioResource, 
+    VoiceConnectionStatus,
+    entersState
+} = require('@discordjs/voice');
+const discordTTS = require('discord-tts'); 
 
-// --- YOUR CUSTOM FLOPPA GALLERY ---
-const FLOPPA_IMAGES = [
-  "https://media.discordapp.net/attachments/1219622260718047333/1475237750390390915/00.png",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475237750797111358/R.png",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475237751296098597/wp9608133.png",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475237751711596634/8407938.png",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475237752105603152/caracal-cat-restingon-perch-k3s3jtnv4i060jky.png",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475237752646926396/8407931.png",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475237753313562824/8407907.png",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475237753842041045/d0d3a009c1f23c3937bafabf5106d0a6.png",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475237754127515819/big-floppa.png",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475238447571534085/925774398972dd015142017588cd60c4.png",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475238448028975194/its-floppa-friday-v0-ak7ern2v3o0a1.png",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475238448414589230/m6r24brupa491.png",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475238448980824074/walter-floppa-white-v0-fs8wwr55ccna1.png",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475238449480208555/60b4cf3985600a50dd341bb7.png",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475238449882730670/f133b868d8438818b222d7381adaadb5.png",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475238450629185737/f0ccfad7b02dd8cb892c5b53ada5b15c.png",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475238451455721684/ab28799af864f0db594e9aa273df4b4e.png",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475238451858112584/343430302_751678373288724_6240394485483171024_n.png",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475240455464550570/ZLCzIgpig35uRVKEdAYJnXBhba4dLIPxJ0mdHLis38RYzUf2hDwjF7MB2HVU2YpJoGEckTA_9gs900-c-k-c0x00ffffff-no-rj.png",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475240456161071175/img63f624f4ad7080.84122409.png",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475240456983150755/387.png",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475240457922412566/OIP.png",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475240459818369205/floppa4.jpg",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475240460372152372/floppa6.webp",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475240460791447602/floppa7.jpg",
-  "https://media.discordapp.net/attachments/1219622260718047333/1475240461152293034/floppa8.jpg",
-  "https://wallpapers.com/images/hd/caracal-cat-restingon-perch-k3s3jtnv4i060jky.jpg"
-];
+const http = require('http');
+const fs = require('fs');
 
-// --- WEB SERVER ---
-app.get("/", (req, res) => res.send("✅ Floppa Bot with Gallery is live!"));
-app.listen(PORT, '0.0.0.0', () => console.log(`🌐 Web server running on port ${PORT}`));
+// --- AI Import ---
+const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require('@google/generative-ai');
 
+// Check for the mandatory token environment variable
+if (!process.env.TOKEN) {
+    console.error("❌ TOKEN not found. Add TOKEN in Environment Variables.");
+    process.exit(1);
+}
+
+// --- AI Key Check ---
+let aiModelInstance;
+let AI_ENABLED = !!process.env.GEMINI_API_KEY;
+
+if (!AI_ENABLED) {
+    console.error("❌ GEMINI_API_KEY not found. AI commands (/ask) and AI moderation are DISABLED.");
+} else {
+    try {
+        const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+        aiModelInstance = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    } catch (e) {
+        console.error("❌ Failed to initialize GoogleGenerativeAI.", e);
+        AI_ENABLED = false;
+    }
+}
+
+// ====================== CLIENT SETUP ======================
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
-  ]
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildVoiceStates 
+    ]
 });
 
-let cooldown = false;
+// ====================== CONFIGURATION ======================
+const GUILD_ID = '1369477266958192720';
+const TARGET_CHANNEL_ID = '1415134887232540764';
+const LOG_CHANNEL_ID = '1414286807360602112';
 
-client.once("ready", () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
-  client.user.setPresence({
-    status: "online",
-    activities: [{ name: "Big Floppa Gallery", type: ActivityType.Watching }]
-  });
+// ====================== BLACKLIST ======================
+const IGNORED_IDS = ['888238712780128288', '1360737030895833360'];
+
+// ====================== DATA STORAGE ======================
+const afkStatus = new Map();
+let copyEnabled = true;    
+let reverseEnabled = false; 
+let selfCopyEnabled = true; // NEW: Toggle for self-mirroring
+let persistentVoiceChannelId = null;
+
+// ====================== HELPER FUNCTIONS ======================
+
+function speakInVC(guildId, text) {
+    const connection = getVoiceConnection(guildId);
+    if (!connection) return false;
+    try {
+        const safeText = text.length > 200 ? text.substring(0, 200) + "..." : text;
+        const stream = discordTTS.getVoiceStream(safeText);
+        const resource = createAudioResource(stream, { inlineVolume: true });
+        resource.volume.setVolume(1);
+        const player = createAudioPlayer();
+        player.play(resource);
+        connection.subscribe(player);
+        return true;
+    } catch (e) {
+        console.error("TTS Error:", e);
+        return false;
+    }
+}
+
+// Helper for Scrambling words
+function scrambleWord(word) {
+    if (word.length <= 2) return word;
+    const chars = word.split('');
+    for (let i = chars.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [chars[i], chars[j]] = [chars[j], chars[i]];
+    }
+    return chars.join('');
+}
+
+// ====================== FILTER LOGIC ======================
+const ALLOWED_WORDS = ["assist", "assistance", "assistant", "associat", "class", "classic", "glass", "grass", "pass", "bass", "compass", "hello", "shell", "peacock", "cocktail", "babcock"];
+const MILD_BAD_WORDS = ["fuck", "f*ck", "f**k", "f-ck", "fck", "fu-", "f-", "f*cking", "fucking", "shit", "s*it", "s**t", "sh!t", "ass", "bitch", "hoe", "whore", "slut", "cunt", "dick", "pussy", "cock", "bastard", "sexy"];
+const SEVERE_WORDS = ["nigger", "nigga", "niga", "faggot", "fag", "dyke", "tranny", "chink", "kike", "paki", "gook", "spic", "beaner", "coon", "retard", "spastic", "mong", "autist", "kys", "kill yourself", "suicide", "rape", "molest", "hitler", "nazi", "kkk"];
+const LEET_MAP = { '0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '@': 'a', '$': 's', '!': 'i', '(': 'c', '+': 't', '8': 'b', '*': 'o', '9': 'g' };
+
+function filterMessageManually(text) {
+    if (!text) return { isSevere: false, isMild: false };
+    let normalized = text.toLowerCase().replace(/[^a-z0-9]/g, '');
+    let leetNormalized = normalized.split('').map(char => LEET_MAP[char] || char).join('');
+    const checkNormalizedText = (list, normText) => {
+        for (const badWord of list) {
+            if (normText.includes(badWord)) {
+                if (ALLOWED_WORDS.some(allowed => allowed.includes(badWord))) continue;
+                return badWord;
+            }
+        }
+        return null;
+    };
+    let severeMatch = checkNormalizedText(SEVERE_WORDS, normalized) || checkNormalizedText(SEVERE_WORDS, leetNormalized);
+    if (severeMatch) return { isSevere: true, isMild: false, matchedWord: severeMatch };
+    let mildMatch = checkNormalizedText(MILD_BAD_WORDS, normalized) || checkNormalizedText(MILD_BAD_WORDS, leetNormalized);
+    if (mildMatch) return { isSevere: false, isMild: true, matchedWord: mildMatch };
+    return { isSevere: false, isMild: false, matchedWord: null };
+}
+
+// ================= BOT EVENTS =================
+client.once('ready', async () => {
+    console.log(`✅ Logged in as ${client.user.tag}`);
+
+    // Set Presence Logic
+    client.user.setPresence({ 
+        activities: [{ name: 'quick tap', type: 0 }], 
+        status: 'online' 
+    });
+
+    const commands = [
+        new SlashCommandBuilder().setName('copytoggle').setDescription('Turn automatic message copying ON or OFF'),
+        new SlashCommandBuilder().setName('selfcopytoggle').setDescription('Turn self-mirroring ON or OFF'),
+        new SlashCommandBuilder().setName('reversetoggle').setDescription('Turn character scramble ON or OFF'),
+        new SlashCommandBuilder().setName('afk').setDescription('Set an AFK status').addStringOption(opt => opt.setName('reason').setDescription('Why are you away?')),
+        new SlashCommandBuilder().setName('say').setDescription('Say something anonymously').addStringOption(opt => opt.setName('text').setDescription('Text').setRequired(true)),
+        new SlashCommandBuilder().setName('ask').setDescription('Ask AI').addStringOption(opt => opt.setName('prompt').setDescription('Question').setRequired(true)),
+        new SlashCommandBuilder().setName('joinvc').setDescription('Join VC'),
+        new SlashCommandBuilder().setName('leavevc').setDescription('Leave VC'),
+        new SlashCommandBuilder().setName('clear').setDescription('Clear messages').addIntegerOption(opt => opt.setName('number').setDescription('Number').setRequired(true))
+    ].map(c => c.toJSON());
+
+    const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
+    try {
+        await rest.put(Routes.applicationGuildCommands(client.user.id, GUILD_ID), { body: commands });
+        console.log('✅ Slash commands and Presence registered.');
+    } catch (err) { console.error(err); }
 });
 
-client.on("messageCreate", async (message) => {
-  if (message.author.bot) return;
-  
-  const content = message.content.toLowerCase();
+// ================= INTERACTION HANDLER =================
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isChatInputCommand()) return;
 
-  if (content === "!floppa" || content.includes("bruh") || content.includes("buh")) {
-    if (cooldown) return;
-    cooldown = true;
-    
-    // Pick a random image from YOUR specific list
-    const randomUrl = FLOPPA_IMAGES[Math.floor(Math.random() * FLOPPA_IMAGES.length)];
-    
-    const embed = new EmbedBuilder()
-      .setColor("#D2B48C")
-      .setTitle("📸 Floppa Spotted!")
-      .setImage(randomUrl)
-      .setFooter({ text: "Source: Private Floppa Collection" });
+    const { commandName, options } = interaction;
 
-    await message.channel.send({ embeds: [embed] });
-    
-    setTimeout(() => (cooldown = false), 3000);
-  }
+    if (commandName === 'copytoggle') {
+        copyEnabled = !copyEnabled;
+        return interaction.reply({ content: `Quick Tap copying is now **${copyEnabled ? 'ENABLED 🔛' : 'DISABLED 📴'}**.` });
+    }
+
+    if (commandName === 'selfcopytoggle') {
+        selfCopyEnabled = !selfCopyEnabled;
+        return interaction.reply({ content: `Self-mirroring is now **${selfCopyEnabled ? 'ENABLED 👥' : 'DISABLED 👤'}**.` });
+    }
+
+    if (commandName === 'reversetoggle') {
+        reverseEnabled = !reverseEnabled;
+        return interaction.reply({ content: `Character Scramble is now **${reverseEnabled ? 'ENABLED 🔄' : 'DISABLED ⏹️'}**.` });
+    }
+
+    if (commandName === 'afk') {
+        const reason = options.getString('reason') || 'No reason provided';
+        afkStatus.set(interaction.user.id, reason);
+        return interaction.reply({ content: `You are now AFK: **${reason}**` });
+    }
+
+    if (commandName === 'say') {
+        const text = options.getString('text');
+        await interaction.channel.send(text);
+        return interaction.reply({ content: "Sent", ephemeral: true });
+    }
+
+    if (commandName === 'ask') {
+        if (!AI_ENABLED) return interaction.reply("AI is currently disabled.");
+        await interaction.deferReply();
+        try {
+            const prompt = options.getString('prompt');
+            const result = await aiModelInstance.generateContent(prompt);
+            const response = await result.response;
+            return interaction.editReply(response.text().substring(0, 2000));
+        } catch (e) {
+            return interaction.editReply("AI Error: Could not generate response.");
+        }
+    }
+
+    if (commandName === 'joinvc') {
+        const member = interaction.member;
+        if (!member.voice.channel) return interaction.reply("Join a VC first!");
+        
+        joinVoiceChannel({
+            channelId: member.voice.channel.id,
+            guildId: interaction.guild.id,
+            adapterCreator: interaction.guild.voiceAdapterCreator,
+            selfDeaf: false,
+            selfMute: false
+        });
+        persistentVoiceChannelId = member.voice.channel.id;
+        return interaction.reply(`Joined ${member.voice.channel.name}`);
+    }
+
+    if (commandName === 'leavevc') {
+        const connection = getVoiceConnection(interaction.guild.id);
+        if (connection) {
+            connection.destroy();
+            persistentVoiceChannelId = null;
+            return interaction.reply("Left the voice channel.");
+        }
+        return interaction.reply("I am not in a voice channel.");
+    }
+
+    if (commandName === 'clear') {
+        if (!interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
+            return interaction.reply({ content: "You need Manage Messages permission.", ephemeral: true });
+        }
+        const num = options.getInteger('number');
+        const deleted = await interaction.channel.bulkDelete(Math.min(num, 100), true);
+        return interaction.reply({ content: `Cleared ${deleted.size} messages.`, ephemeral: true });
+    }
 });
 
-client.login(TOKEN).catch(err => console.error("❌ LOGIN FAILED:", err.message));
+// ================= MESSAGE HANDLER =================
+client.on('messageCreate', async (message) => {
+    if (message.author.bot || !message.guild) return;
+
+    // --- QUICK TAP / AUTOMATIC GLOBAL COPY ---
+    if (copyEnabled) {
+        // If selfCopyEnabled is true, we don't care about IGNORED_IDS for the trigger
+        // This makes sure your own messages get copied too.
+        if ((!IGNORED_IDS.includes(message.author.id) || selfCopyEnabled) && !message.content.startsWith('/')) {
+            if (message.content.length > 0) {
+                let textToSend = message.content;
+
+                // Apply Scramble if enabled
+                if (reverseEnabled) {
+                    textToSend = textToSend
+                        .split(' ')
+                        .map(word => scrambleWord(word))
+                        .join(' ');
+                }
+
+                await message.channel.send(textToSend);
+            }
+        }
+    }
+
+    // --- AFK MENTION LOGIC ---
+    message.mentions.users.forEach((user) => {
+        if (afkStatus.has(user.id)) {
+            message.reply(`${user.username} is currently AFK: ${afkStatus.get(user.id)}`);
+        }
+    });
+
+    if (afkStatus.has(message.author.id)) {
+        afkStatus.delete(message.author.id);
+        message.reply(`Welcome back ${message.author}! Quick Tap has restored your status.`).then(m => setTimeout(() => m.delete(), 5000));
+    }
+
+    // --- IMAGE ONLY CHANNEL ---
+    if (message.channel.id === TARGET_CHANNEL_ID) {
+        if (message.attachments.size === 0) {
+            await message.delete().catch(() => {});
+            return;
+        }
+        await message.react('✨');
+        await message.startThread({ name: `${message.author.username}'s Post`, autoArchiveDuration: 60 });
+    }
+
+    // --- MANUAL FILTER ---
+    const manualFilter = filterMessageManually(message.content);
+    if (manualFilter.isSevere || manualFilter.isMild) {
+        await message.delete().catch(() => {});
+        const log = client.channels.cache.get(LOG_CHANNEL_ID);
+        if (log) log.send(`⚠️ Filter Triggered by ${message.author.tag}: ||${manualFilter.matchedWord}||`);
+    }
+});
+
+// ================= VOICE STATE UPDATES =================
+client.on('voiceStateUpdate', (oldState, newState) => {
+    if (oldState.member.id === client.user.id && !newState.channelId) {
+        if (persistentVoiceChannelId) {
+            setTimeout(() => {
+                const guild = client.guilds.cache.get(GUILD_ID);
+                if (guild) {
+                    joinVoiceChannel({
+                        channelId: persistentVoiceChannelId,
+                        guildId: guild.id,
+                        adapterCreator: guild.voiceAdapterCreator,
+                        selfDeaf: false,
+                        selfMute: false
+                    });
+                }
+            }, 2000);
+        }
+    }
+
+    if (!oldState.channelId && newState.channelId && !newState.member.user.bot) {
+        const connection = getVoiceConnection(newState.guild.id);
+        if (connection && connection.joinConfig.channelId === newState.channelId) {
+            setTimeout(() => {
+                speakInVC(newState.guild.id, `Hello ${newState.member.displayName}, welcome to the voice chat!`);
+            }, 1500);
+        }
+    }
+});
+
+process.on('uncaughtException', (err) => console.error('❌ Exception:', err));
+process.on('unhandledRejection', (reason) => console.error('❌ Rejection:', reason));
+
+client.login(process.env.TOKEN);
+
+const PORT = process.env.PORT || 1902;
+http.createServer((req, res) => { res.writeHead(200); res.end('Bot Running'); }).listen(PORT);
