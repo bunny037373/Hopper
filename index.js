@@ -143,7 +143,7 @@ client.once('ready', async () => {
 
     // Set Presence Logic
     client.user.setPresence({ 
-        activities: [{ name: 'quick tap', type: 0 }], 
+        activities: [{ name: 'EXPLODING QUICK TAP BECAUSE ITS SUCH AN EXPLODING CUBE GAME WITH NONESENS AND STUPID CUBES AND 2.99$ APPS THAT ARE SO STUPID I DONT KNOW WHY THEY EXISTED DESTERY THE COZMO APP RIGHT NOW OR I WILL EAT HIS CUBES !!! ', type: 0 }], 
         status: 'online' 
     });
 
