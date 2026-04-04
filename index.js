@@ -174,7 +174,7 @@ client.on('interactionCreate', async (interaction) => {
 
     if (commandName === 'copytoggle') {
         copyEnabled = !copyEnabled;
-        return interaction.reply({ content: `Quick Tap copying is now **${copyEnabled ? 'ENABLED 🔛' : 'DISABLED 📴'}**.` });
+        return interaction.reply({ content: `copying is now **${copyEnabled ? 'ENABLED 🔛' : 'DISABLED 📴'}**.` });
     }
 
     if (commandName === 'selfcopytoggle') {
