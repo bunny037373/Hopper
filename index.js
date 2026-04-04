@@ -143,7 +143,7 @@ client.once('ready', async () => {
 
     // Set Presence Logic
     client.user.setPresence({ 
-        activities: [{ name: 'EXPLODING QUICK TAP AND KEEPAWAY', type: 0 }], 
+        activities: [{ name: 'QUICK TAP EXPLOSTIONS', type: 0 }], 
         status: 'online' 
     });
 
