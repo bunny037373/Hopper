@@ -144,7 +144,7 @@ client.once('ready', async () => {
     // Set Presence Logic
     client.user.setPresence({ 
         activities: [{ name: 'QUICK TAP EXPLOSTIONS', type: 0 }], 
-        status: 'online' 
+        status: 'offline' 
     });
 
     const commands = [
