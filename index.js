@@ -77,7 +77,8 @@ const IGNORED_IDS = ['888238712780128288', '1360737030895833360'];
 const afkStatus = new Map();
 let copyEnabled = true;    
 let reverseEnabled = false; 
-let selfCopyEnabled = true; // NEW: Toggle for self-mirroring
+let selfCopyEnabled = true; 
+let targetUserId = null; // NEW: Stores the specific user being followed
 let persistentVoiceChannelId = null;
 
 // ====================== HELPER FUNCTIONS ======================
@@ -100,7 +101,6 @@ function speakInVC(guildId, text) {
     }
 }
 
-// Helper for Scrambling words
 function scrambleWord(word) {
     if (word.length <= 2) return word;
     const chars = word.split('');
@@ -141,13 +141,14 @@ function filterMessageManually(text) {
 client.once('ready', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
 
-    // Set Presence Logic
     client.user.setPresence({ 
         activities: [{ name: 'LOOI', type: 0 }], 
         status: 'online' 
     });
 
     const commands = [
+        new SlashCommandBuilder().setName('target').setDescription('Lock on and mirror a specific user').addUserOption(opt => opt.setName('user').setDescription('The user to follow').setRequired(true)),
+        new SlashCommandBuilder().setName('untarget').setDescription('Stop following a specific user'),
         new SlashCommandBuilder().setName('copytoggle').setDescription('Turn automatic message copying ON or OFF'),
         new SlashCommandBuilder().setName('selfcopytoggle').setDescription('Turn self-mirroring ON or OFF'),
         new SlashCommandBuilder().setName('reversetoggle').setDescription('Turn character scramble ON or OFF'),
@@ -162,7 +163,7 @@ client.once('ready', async () => {
     const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
     try {
         await rest.put(Routes.applicationGuildCommands(client.user.id, GUILD_ID), { body: commands });
-        console.log('✅ Slash commands and Presence registered.');
+        console.log('✅ Slash commands registered.');
     } catch (err) { console.error(err); }
 });
 
@@ -172,9 +173,20 @@ client.on('interactionCreate', async (interaction) => {
 
     const { commandName, options } = interaction;
 
+    if (commandName === 'target') {
+        const user = options.getUser('user');
+        targetUserId = user.id;
+        return interaction.reply({ content: `🎯 Now targeting **${user.username}**. All other mirroring is paused.` });
+    }
+
+    if (commandName === 'untarget') {
+        targetUserId = null;
+        return interaction.reply({ content: `🔓 Target cleared. Returning to normal mirror mode.` });
+    }
+
     if (commandName === 'copytoggle') {
         copyEnabled = !copyEnabled;
-        return interaction.reply({ content: `copying is now **${copyEnabled ? 'ENABLED 🔛' : 'DISABLED 📴'}**.` });
+        return interaction.reply({ content: `Copying is now **${copyEnabled ? 'ENABLED 🔛' : 'DISABLED 📴'}**.` });
     }
 
     if (commandName === 'selfcopytoggle') {
@@ -215,7 +227,6 @@ client.on('interactionCreate', async (interaction) => {
     if (commandName === 'joinvc') {
         const member = interaction.member;
         if (!member.voice.channel) return interaction.reply("Join a VC first!");
-        
         joinVoiceChannel({
             channelId: member.voice.channel.id,
             guildId: interaction.guild.id,
@@ -251,22 +262,26 @@ client.on('interactionCreate', async (interaction) => {
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
-    // --- QUICK TAP / AUTOMATIC GLOBAL COPY ---
+    // --- MIRRORING LOGIC ---
     if (copyEnabled) {
-        // If selfCopyEnabled is true, we don't care about IGNORED_IDS for the trigger
-        // This makes sure your own messages get copied too.
-        if ((!IGNORED_IDS.includes(message.author.id) || selfCopyEnabled) && !message.content.startsWith('/')) {
-            if (message.content.length > 0) {
-                let textToSend = message.content;
+        let shouldMirror = false;
 
-                // Apply Scramble if enabled
-                if (reverseEnabled) {
-                    textToSend = textToSend
-                        .split(' ')
-                        .map(word => scrambleWord(word))
-                        .join(' ');
-                }
+        if (targetUserId) {
+            // Logic: ONLY mirror if they are the target
+            if (message.author.id === targetUserId) shouldMirror = true;
+        } else {
+            // Logic: Global mirror (original behavior)
+            if (!IGNORED_IDS.includes(message.author.id) || (selfCopyEnabled && message.author.id === client.user.id)) {
+                shouldMirror = true;
+            }
+        }
 
+        if (shouldMirror && !message.content.startsWith('/')) {
+            let textToSend = message.content;
+            if (reverseEnabled) {
+                textToSend = textToSend.split(' ').map(word => scrambleWord(word)).join(' ');
+            }
+            if (textToSend.length > 0) {
                 await message.channel.send(textToSend);
             }
         }
@@ -281,7 +296,7 @@ client.on('messageCreate', async (message) => {
 
     if (afkStatus.has(message.author.id)) {
         afkStatus.delete(message.author.id);
-        message.reply(`Welcome back ${message.author}! Quick Tap has restored your status.`).then(m => setTimeout(() => m.delete(), 5000));
+        message.reply(`Welcome back ${message.author}! AFK removed.`).then(m => setTimeout(() => m.delete(), 5000));
     }
 
     // --- IMAGE ONLY CHANNEL ---
