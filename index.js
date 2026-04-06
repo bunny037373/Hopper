@@ -78,7 +78,7 @@ const afkStatus = new Map();
 let copyEnabled = true;    
 let reverseEnabled = false; 
 let selfCopyEnabled = true; 
-let targetUserId = null; // NEW: Stores the specific user being followed
+let targetUserId = null; 
 let persistentVoiceChannelId = null;
 
 // ====================== HELPER FUNCTIONS ======================
@@ -142,119 +142,87 @@ client.once('ready', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
 
     client.user.setPresence({ 
-        activities: [{ name: 'LOOI', type: 0 }], 
+        activities: [{ name: 'Watching You 👀', type: 3 }], 
         status: 'online' 
     });
 
     const commands = [
-        new SlashCommandBuilder().setName('target').setDescription('Lock on and mirror a specific user').addUserOption(opt => opt.setName('user').setDescription('The user to follow').setRequired(true)),
-        new SlashCommandBuilder().setName('untarget').setDescription('Stop following a specific user'),
+        new SlashCommandBuilder().setName('target').setDescription('Lock on and mirror/follow a specific user').addUserOption(opt => opt.setName('user').setDescription('The user to follow').setRequired(true)),
+        new SlashCommandBuilder().setName('untarget').setDescription('Stop following the current target'),
         new SlashCommandBuilder().setName('copytoggle').setDescription('Turn automatic message copying ON or OFF'),
-        new SlashCommandBuilder().setName('selfcopytoggle').setDescription('Turn self-mirroring ON or OFF'),
         new SlashCommandBuilder().setName('reversetoggle').setDescription('Turn character scramble ON or OFF'),
         new SlashCommandBuilder().setName('afk').setDescription('Set an AFK status').addStringOption(opt => opt.setName('reason').setDescription('Why are you away?')),
-        new SlashCommandBuilder().setName('say').setDescription('Say something anonymously').addStringOption(opt => opt.setName('text').setDescription('Text').setRequired(true)),
         new SlashCommandBuilder().setName('ask').setDescription('Ask AI').addStringOption(opt => opt.setName('prompt').setDescription('Question').setRequired(true)),
-        new SlashCommandBuilder().setName('joinvc').setDescription('Join VC'),
-        new SlashCommandBuilder().setName('leavevc').setDescription('Leave VC'),
+        new SlashCommandBuilder().setName('joinvc').setDescription('Join current VC manually'),
+        new SlashCommandBuilder().setName('leavevc').setDescription('Leave VC manually'),
         new SlashCommandBuilder().setName('clear').setDescription('Clear messages').addIntegerOption(opt => opt.setName('number').setDescription('Number').setRequired(true))
     ].map(c => c.toJSON());
 
     const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
     try {
         await rest.put(Routes.applicationGuildCommands(client.user.id, GUILD_ID), { body: commands });
-        console.log('✅ Slash commands registered.');
+        console.log('✅ Commands and Follower Logic ready.');
     } catch (err) { console.error(err); }
 });
 
 // ================= INTERACTION HANDLER =================
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
-
     const { commandName, options } = interaction;
 
     if (commandName === 'target') {
         const user = options.getUser('user');
         targetUserId = user.id;
-        return interaction.reply({ content: `🎯 Now targeting **${user.username}**. All other mirroring is paused.` });
+        return interaction.reply({ content: `🎯 Target locked: **${user.username}**. I'll follow you everywhere.` });
     }
 
     if (commandName === 'untarget') {
         targetUserId = null;
-        return interaction.reply({ content: `🔓 Target cleared. Returning to normal mirror mode.` });
+        return interaction.reply({ content: `🔓 Standing down. I am no longer following anyone.` });
     }
 
     if (commandName === 'copytoggle') {
         copyEnabled = !copyEnabled;
-        return interaction.reply({ content: `Copying is now **${copyEnabled ? 'ENABLED 🔛' : 'DISABLED 📴'}**.` });
-    }
-
-    if (commandName === 'selfcopytoggle') {
-        selfCopyEnabled = !selfCopyEnabled;
-        return interaction.reply({ content: `Self-mirroring is now **${selfCopyEnabled ? 'ENABLED 👥' : 'DISABLED 👤'}**.` });
+        return interaction.reply({ content: `Copying is now **${copyEnabled ? 'ENABLED' : 'DISABLED'}**.` });
     }
 
     if (commandName === 'reversetoggle') {
         reverseEnabled = !reverseEnabled;
-        return interaction.reply({ content: `Character Scramble is now **${reverseEnabled ? 'ENABLED 🔄' : 'DISABLED ⏹️'}**.` });
-    }
-
-    if (commandName === 'afk') {
-        const reason = options.getString('reason') || 'No reason provided';
-        afkStatus.set(interaction.user.id, reason);
-        return interaction.reply({ content: `You are now AFK: **${reason}**` });
-    }
-
-    if (commandName === 'say') {
-        const text = options.getString('text');
-        await interaction.channel.send(text);
-        return interaction.reply({ content: "Sent", ephemeral: true });
+        return interaction.reply({ content: `Scramble mode is **${reverseEnabled ? 'ON' : 'OFF'}**.` });
     }
 
     if (commandName === 'ask') {
-        if (!AI_ENABLED) return interaction.reply("AI is currently disabled.");
+        if (!AI_ENABLED) return interaction.reply("AI is disabled.");
         await interaction.deferReply();
         try {
             const prompt = options.getString('prompt');
             const result = await aiModelInstance.generateContent(prompt);
             const response = await result.response;
             return interaction.editReply(response.text().substring(0, 2000));
-        } catch (e) {
-            return interaction.editReply("AI Error: Could not generate response.");
-        }
+        } catch (e) { return interaction.editReply("AI Error."); }
     }
 
     if (commandName === 'joinvc') {
-        const member = interaction.member;
-        if (!member.voice.channel) return interaction.reply("Join a VC first!");
+        const channel = interaction.member.voice.channel;
+        if (!channel) return interaction.reply("Join a VC first!");
         joinVoiceChannel({
-            channelId: member.voice.channel.id,
+            channelId: channel.id,
             guildId: interaction.guild.id,
             adapterCreator: interaction.guild.voiceAdapterCreator,
-            selfDeaf: false,
-            selfMute: false
         });
-        persistentVoiceChannelId = member.voice.channel.id;
-        return interaction.reply(`Joined ${member.voice.channel.name}`);
+        return interaction.reply(`Joined ${channel.name}`);
     }
 
     if (commandName === 'leavevc') {
-        const connection = getVoiceConnection(interaction.guild.id);
-        if (connection) {
-            connection.destroy();
-            persistentVoiceChannelId = null;
-            return interaction.reply("Left the voice channel.");
-        }
-        return interaction.reply("I am not in a voice channel.");
+        const conn = getVoiceConnection(interaction.guild.id);
+        if (conn) { conn.destroy(); return interaction.reply("Left VC."); }
+        return interaction.reply("Not in a VC.");
     }
 
     if (commandName === 'clear') {
-        if (!interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
-            return interaction.reply({ content: "You need Manage Messages permission.", ephemeral: true });
-        }
         const num = options.getInteger('number');
-        const deleted = await interaction.channel.bulkDelete(Math.min(num, 100), true);
-        return interaction.reply({ content: `Cleared ${deleted.size} messages.`, ephemeral: true });
+        await interaction.channel.bulkDelete(Math.min(num, 100), true);
+        return interaction.reply({ content: `Cleared ${num} messages.`, ephemeral: true });
     }
 });
 
@@ -262,87 +230,61 @@ client.on('interactionCreate', async (interaction) => {
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
-    // --- MIRRORING LOGIC ---
     if (copyEnabled) {
-        let shouldMirror = false;
-
-        if (targetUserId) {
-            // Logic: ONLY mirror if they are the target
-            if (message.author.id === targetUserId) shouldMirror = true;
-        } else {
-            // Logic: Global mirror (original behavior)
-            if (!IGNORED_IDS.includes(message.author.id) || (selfCopyEnabled && message.author.id === client.user.id)) {
-                shouldMirror = true;
-            }
-        }
-
+        let shouldMirror = targetUserId ? (message.author.id === targetUserId) : !IGNORED_IDS.includes(message.author.id);
+        
         if (shouldMirror && !message.content.startsWith('/')) {
-            let textToSend = message.content;
-            if (reverseEnabled) {
-                textToSend = textToSend.split(' ').map(word => scrambleWord(word)).join(' ');
-            }
-            if (textToSend.length > 0) {
-                await message.channel.send(textToSend);
-            }
+            let text = message.content;
+            if (reverseEnabled) text = text.split(' ').map(w => scrambleWord(w)).join(' ');
+            if (text.length > 0) await message.channel.send(text);
         }
     }
 
-    // --- AFK MENTION LOGIC ---
-    message.mentions.users.forEach((user) => {
-        if (afkStatus.has(user.id)) {
-            message.reply(`${user.username} is currently AFK: ${afkStatus.get(user.id)}`);
-        }
-    });
-
+    // AFK Check
+    if (message.mentions.users.some(u => afkStatus.has(u.id))) {
+        const user = message.mentions.users.find(u => afkStatus.has(u.id));
+        message.reply(`${user.username} is AFK: ${afkStatus.get(user.id)}`);
+    }
     if (afkStatus.has(message.author.id)) {
         afkStatus.delete(message.author.id);
-        message.reply(`Welcome back ${message.author}! AFK removed.`).then(m => setTimeout(() => m.delete(), 5000));
-    }
-
-    // --- IMAGE ONLY CHANNEL ---
-    if (message.channel.id === TARGET_CHANNEL_ID) {
-        if (message.attachments.size === 0) {
-            await message.delete().catch(() => {});
-            return;
-        }
-        await message.react('✨');
-        await message.startThread({ name: `${message.author.username}'s Post`, autoArchiveDuration: 60 });
-    }
-
-    // --- MANUAL FILTER ---
-    const manualFilter = filterMessageManually(message.content);
-    if (manualFilter.isSevere || manualFilter.isMild) {
-        await message.delete().catch(() => {});
-        const log = client.channels.cache.get(LOG_CHANNEL_ID);
-        if (log) log.send(`⚠️ Filter Triggered by ${message.author.tag}: ||${manualFilter.matchedWord}||`);
+        message.reply("Welcome back! AFK removed.").then(m => setTimeout(() => m.delete(), 3000));
     }
 });
 
-// ================= VOICE STATE UPDATES =================
+// ================= VOICE STATE UPDATES (THE FOLLOWER LOGIC) =================
 client.on('voiceStateUpdate', (oldState, newState) => {
-    if (oldState.member.id === client.user.id && !newState.channelId) {
-        if (persistentVoiceChannelId) {
-            setTimeout(() => {
-                const guild = client.guilds.cache.get(GUILD_ID);
-                if (guild) {
-                    joinVoiceChannel({
-                        channelId: persistentVoiceChannelId,
-                        guildId: guild.id,
-                        adapterCreator: guild.voiceAdapterCreator,
-                        selfDeaf: false,
-                        selfMute: false
-                    });
-                }
-            }, 2000);
+    // 1. If we have a target and they move...
+    if (targetUserId && newState.member.id === targetUserId) {
+        
+        // Target joined or moved to a new VC
+        if (newState.channelId && oldState.channelId !== newState.channelId) {
+            joinVoiceChannel({
+                channelId: newState.channelId,
+                guildId: newState.guild.id,
+                adapterCreator: newState.guild.voiceAdapterCreator,
+                selfDeaf: false,
+                selfMute: false
+            });
+            console.log(`🚀 Following target to: ${newState.channel.name}`);
+        } 
+        
+        // Target left VC entirely
+        else if (!newState.channelId) {
+            const connection = getVoiceConnection(newState.guild.id);
+            if (connection) {
+                connection.destroy();
+                console.log(`👋 Target left VC, so I left too.`);
+            }
         }
     }
 
+    // 2. Greeting logic if someone joins the bot's current room
     if (!oldState.channelId && newState.channelId && !newState.member.user.bot) {
         const connection = getVoiceConnection(newState.guild.id);
         if (connection && connection.joinConfig.channelId === newState.channelId) {
             setTimeout(() => {
-                speakInVC(newState.guild.id, `Hello ${newState.member.displayName}, welcome to the voice chat!`);
-            }, 1500);
+                speakInVC(newState.guild.id, `Hey ${newState.member.displayName}, I'm here.`);
+            }, 1000);
         }
     }
 });
@@ -353,4 +295,4 @@ process.on('unhandledRejection', (reason) => console.error('❌ Rejection:', rea
 client.login(process.env.TOKEN);
 
 const PORT = process.env.PORT || 1902;
-http.createServer((req, res) => { res.writeHead(200); res.end('Bot Running'); }).listen(PORT);
+http.createServer((req, res) => { res.writeHead(200); res.end('Follower Bot Active'); }).listen(PORT);
