@@ -143,8 +143,8 @@ client.once('ready', async () => {
 
     // Set Presence Logic
     client.user.setPresence({ 
-        activities: [{ name: 'QUICK TAP EXPLOSTIONS', type: 0 }], 
-        status: 'offline' 
+        activities: [{ name: 'LOOI', type: 0 }], 
+        status: 'online' 
     });
 
     const commands = [
