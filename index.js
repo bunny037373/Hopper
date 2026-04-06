@@ -142,7 +142,7 @@ client.once('ready', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
 
     client.user.setPresence({ 
-        activities: [{ name: 'Watching You 👀', type: 3 }], 
+        activities: [{ name: 'looi', type: 3 }], 
         status: 'online' 
     });
 
