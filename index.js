@@ -79,7 +79,7 @@ function speakInVC(guildId, text) {
 // ================= BOT EVENTS =================
 client.once('ready', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
-    client.user.setPresence({ activities: [{ name: 'Watching 👀', type: 3 }] });
+    client.user.setPresence({ activities: [{ name: 'looi', type: 3 }] });
 
     const commands = [
         new SlashCommandBuilder().setName('target').setDescription('Lock on and follow a specific user').addUserOption(opt => opt.setName('user').setDescription('The user to follow').setRequired(true)),
