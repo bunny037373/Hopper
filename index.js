@@ -4,7 +4,11 @@ const {
     REST,
     Routes,
     SlashCommandBuilder,
-    PermissionsBitField
+    PermissionsBitField,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    ChannelType
 } = require('discord.js');
 
 const { 
@@ -33,14 +37,10 @@ const client = new Client({
 const GUILD_ID = '1369477266958192720';
 const TARGET_CHANNEL_ID = '1415134887232540764';
 const LOG_CHANNEL_ID = '1414286807360602112';
-const IGNORED_IDS = ['888238712780128288', '1360737030895833360'];
+const MOD_ROLE_ID = '1506481374637588500'; // The mod team role pinged in tickets
 
 // ====================== DATA STORAGE ======================
 const afkStatus = new Map();
-let copyEnabled = true;    
-let reverseEnabled = false; 
-let selfCopyEnabled = true; 
-let targetUserId = null; // Stores the specific user being followed
 let persistentVoiceChannelId = null;
 
 // ====================== AI SETUP ======================
@@ -52,17 +52,6 @@ if (AI_ENABLED) {
 }
 
 // ====================== HELPER FUNCTIONS ======================
-
-function scrambleWord(word) {
-    if (word.length <= 2) return word;
-    const chars = word.split('');
-    for (let i = chars.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [chars[i], chars[j]] = [chars[j], chars[i]];
-    }
-    return chars.join('');
-}
-
 function speakInVC(guildId, text) {
     const connection = getVoiceConnection(guildId);
     if (!connection) return false;
@@ -82,17 +71,13 @@ client.once('ready', async () => {
     client.user.setPresence({ activities: [{ name: 'looi', type: 3 }] });
 
     const commands = [
-        new SlashCommandBuilder().setName('target').setDescription('Lock on and follow a specific user').addUserOption(opt => opt.setName('user').setDescription('The user to follow').setRequired(true)),
-        new SlashCommandBuilder().setName('untarget').setDescription('Stop following a specific user'),
-        new SlashCommandBuilder().setName('copytoggle').setDescription('Toggle global mirroring'),
-        new SlashCommandBuilder().setName('selfcopytoggle').setDescription('Toggle self-mirroring'),
-        new SlashCommandBuilder().setName('reversetoggle').setDescription('Toggle scramble mode'),
         new SlashCommandBuilder().setName('say').setDescription('Send a message as the bot').addStringOption(opt => opt.setName('text').setDescription('Text').setRequired(true)),
         new SlashCommandBuilder().setName('ask').setDescription('Ask AI').addStringOption(opt => opt.setName('prompt').setDescription('Prompt').setRequired(true)),
         new SlashCommandBuilder().setName('afk').setDescription('Set AFK status').addStringOption(opt => opt.setName('reason').setDescription('Reason')),
         new SlashCommandBuilder().setName('joinvc').setDescription('Join VC'),
         new SlashCommandBuilder().setName('leavevc').setDescription('Leave VC'),
-        new SlashCommandBuilder().setName('clear').setDescription('Delete messages').addIntegerOption(opt => opt.setName('num').setDescription('Amount').setRequired(true))
+        new SlashCommandBuilder().setName('clear').setDescription('Delete messages').addIntegerOption(opt => opt.setName('num').setDescription('Amount').setRequired(true)),
+        new SlashCommandBuilder().setName('start-ticket').setDescription('Send the ticket creation prompt menu')
     ].map(c => c.toJSON());
 
     const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
@@ -103,76 +88,123 @@ client.once('ready', async () => {
 
 // ================= INTERACTION HANDLER =================
 client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
-    const { commandName, options } = interaction;
+    // --- HANDLING SLASH COMMANDS ---
+    if (interaction.isChatInputCommand()) {
+        const { commandName, options } = interaction;
 
-    if (commandName === 'target') {
-        const user = options.getUser('user');
-        targetUserId = user.id;
-        return interaction.reply(`🎯 Now following **${user.username}** everywhere.`);
+        if (commandName === 'start-ticket') {
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId('create_ticket')
+                    .setLabel('Make a Ticket')
+                    .setStyle(ButtonStyle.Primary)
+            );
+
+            return interaction.reply({
+                content: 'Hello there toon! So you probably want to make a ticket!',
+                components: [row]
+            });
+        }
+
+        if (commandName === 'say') {
+            const text = options.getString('text');
+            await interaction.channel.send(text);
+            return interaction.reply({ content: 'Sent!', ephemeral: true });
+        }
+        if (commandName === 'ask') {
+            if (!AI_ENABLED) return interaction.reply("AI Disabled.");
+            await interaction.deferReply();
+            const result = await aiModelInstance.generateContent(options.getString('prompt'));
+            return interaction.editReply(result.response.text().substring(0, 2000));
+        }
+        if (commandName === 'afk') {
+            const reason = options.getString('reason') || 'AFK';
+            afkStatus.set(interaction.user.id, reason);
+            return interaction.reply(`You are now AFK: ${reason}`);
+        }
+        if (commandName === 'clear') {
+            const num = options.getInteger('num');
+            if (num < 1 || num > 100) return interaction.reply({ content: 'Provide a number between 1 and 100.', ephemeral: true });
+            await interaction.channel.bulkDelete(num, true);
+            return interaction.reply({ content: `Deleted ${num} messages.`, ephemeral: true });
+        }
+        if (commandName === 'joinvc') {
+            const channel = interaction.member.voice.channel;
+            if (!channel) return interaction.reply("Join a VC!");
+            joinVoiceChannel({ channelId: channel.id, guildId: interaction.guild.id, adapterCreator: interaction.guild.voiceAdapterCreator });
+            return interaction.reply(`Joined ${channel.name}`);
+        }
+        if (commandName === 'leavevc') {
+            getVoiceConnection(interaction.guild.id)?.destroy();
+            return interaction.reply("Left VC.");
+        }
     }
-    if (commandName === 'untarget') {
-        targetUserId = null;
-        return interaction.reply(`🔓 Stopped following.`);
-    }
-    if (commandName === 'copytoggle') {
-        copyEnabled = !copyEnabled;
-        return interaction.reply(`Global Copy: **${copyEnabled}**`);
-    }
-    if (commandName === 'selfcopytoggle') {
-        selfCopyEnabled = !selfCopyEnabled;
-        return interaction.reply(`Self Mirror: **${selfCopyEnabled}**`);
-    }
-    if (commandName === 'reversetoggle') {
-        reverseEnabled = !reverseEnabled;
-        return interaction.reply(`Scramble: **${reverseEnabled}**`);
-    }
-    if (commandName === 'say') {
-        const text = options.getString('text');
-        await interaction.channel.send(text);
-        return interaction.reply({ content: 'Sent!', ephemeral: true });
-    }
-    if (commandName === 'ask') {
-        if (!AI_ENABLED) return interaction.reply("AI Disabled.");
-        await interaction.deferReply();
-        const result = await aiModelInstance.generateContent(options.getString('prompt'));
-        return interaction.editReply(result.response.text().substring(0, 2000));
-    }
-    if (commandName === 'joinvc') {
-        const channel = interaction.member.voice.channel;
-        if (!channel) return interaction.reply("Join a VC!");
-        joinVoiceChannel({ channelId: channel.id, guildId: interaction.guild.id, adapterCreator: interaction.guild.voiceAdapterCreator });
-        return interaction.reply(`Joined ${channel.name}`);
-    }
-    if (commandName === 'leavevc') {
-        getVoiceConnection(interaction.guild.id)?.destroy();
-        return interaction.reply("Left VC.");
+
+    // --- HANDLING BUTTON INTERACTIONS ---
+    if (interaction.isButton()) {
+        if (interaction.customId === 'create_ticket') {
+            await interaction.deferReply({ ephemeral: true });
+
+            const guild = interaction.guild;
+            const member = interaction.member;
+
+            try {
+                const ticketChannel = await guild.channels.create({
+                    name: `ticket-${member.user.username}`,
+                    type: ChannelType.GuildText,
+                    permissionOverwrites: [
+                        {
+                            id: guild.roles.everyone.id,
+                            deny: [PermissionsBitField.Flags.ViewChannel],
+                        },
+                        {
+                            id: member.id,
+                            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory],
+                        },
+                        {
+                            id: MOD_ROLE_ID,
+                            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory],
+                        }
+                    ],
+                });
+
+                const closeRow = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('close_ticket')
+                        .setLabel('Close Ticket')
+                        .setStyle(ButtonStyle.Danger)
+                );
+
+                await ticketChannel.send({
+                    content: `<@&${MOD_ROLE_ID}>\nHello <@${member.id}>, a Mod will be with you in a minute.`,
+                    components: [closeRow]
+                });
+
+                return interaction.editReply({ content: `Your ticket has been opened here: ${ticketChannel}`, ephemeral: true });
+
+            } catch (error) {
+                console.error(error);
+                return interaction.editReply({ content: 'Something went wrong while executing this system.', ephemeral: true });
+            }
+        }
+
+        if (interaction.customId === 'close_ticket') {
+            await interaction.reply({ content: 'Closing channel in 5 seconds...' });
+            setTimeout(async () => {
+                try {
+                    await interaction.channel.delete();
+                } catch (e) {
+                    console.error("Failed to delete channel: ", e);
+                }
+            }, 5000);
+        }
     }
 });
 
 // ================= MESSAGE HANDLER =================
 client.on('messageCreate', async (message) => {
-    if (message.author.bot && !selfCopyEnabled) return; 
+    if (message.author.bot) return; 
     if (!message.guild || message.content.startsWith('/')) return;
-
-    // --- MIRRORING LOGIC ---
-    if (copyEnabled) {
-        let shouldMirror = false;
-        
-        if (targetUserId) {
-            if (message.author.id === targetUserId) shouldMirror = true;
-        } else {
-            if (!IGNORED_IDS.includes(message.author.id) || (selfCopyEnabled && IGNORED_IDS.includes(message.author.id))) {
-                shouldMirror = true;
-            }
-        }
-
-        if (shouldMirror && message.content.length > 0) {
-            let text = message.content;
-            if (reverseEnabled) text = text.split(' ').map(w => scrambleWord(w)).join(' ');
-            await message.channel.send(text);
-        }
-    }
 
     // --- AFK LOGIC ---
     if (afkStatus.has(message.author.id)) {
@@ -181,21 +213,8 @@ client.on('messageCreate', async (message) => {
     }
 });
 
-// ================= VOICE STATE UPDATES (VC FOLLOW) =================
+// ================= VOICE STATE UPDATES =================
 client.on('voiceStateUpdate', (oldState, newState) => {
-    // If target exists and they move VCs
-    if (targetUserId && newState.member.id === targetUserId) {
-        if (newState.channelId && oldState.channelId !== newState.channelId) {
-            joinVoiceChannel({
-                channelId: newState.channelId,
-                guildId: newState.guild.id,
-                adapterCreator: newState.guild.voiceAdapterCreator
-            });
-        } else if (!newState.channelId) {
-            getVoiceConnection(newState.guild.id)?.destroy();
-        }
-    }
-
     // Auto-Greeting
     if (!oldState.channelId && newState.channelId && !newState.member.user.bot) {
         const conn = getVoiceConnection(newState.guild.id);
